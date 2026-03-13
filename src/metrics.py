@@ -1,5 +1,3 @@
-# src/metrics.py
-
 from __future__ import annotations
 
 import numpy as np
@@ -53,7 +51,6 @@ def calibration_slope_intercept(y_true, p_pred) -> dict:
     logits = np.log(p_pred / (1.0 - p_pred))
     x = np.column_stack([np.ones(len(logits)), logits])
 
-    # Regressão logística simples por Newton-Raphson
     beta = np.zeros(2, dtype=float)
 
     for _ in range(50):
@@ -83,8 +80,18 @@ def calibration_slope_intercept(y_true, p_pred) -> dict:
 
 def probability_band_report(y_true, p_pred, bands=None) -> pd.DataFrame:
     if bands is None:
-        bands = [(0.0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.4), (0.4, 0.5),
-                 (0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0)]
+        bands = [
+            (0.0, 0.1),
+            (0.1, 0.2),
+            (0.2, 0.3),
+            (0.3, 0.4),
+            (0.4, 0.5),
+            (0.5, 0.6),
+            (0.6, 0.7),
+            (0.7, 0.8),
+            (0.8, 0.9),
+            (0.9, 1.0),
+        ]
 
     y_true = np.asarray(y_true).astype(int)
     p_pred = clip_probs(p_pred)
