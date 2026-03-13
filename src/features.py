@@ -1,4 +1,5 @@
 # src/features.py
+# SUBSTITUA O ARQUIVO INTEIRO
 
 import numpy as np
 import pandas as pd
@@ -30,10 +31,15 @@ def build_team_features(games_long: pd.DataFrame, season: int, recent_n: int, al
     for team_id, grp in season_games.groupby("TeamID"):
         grp = grp.sort_values("DayNum")
         recent = grp.tail(recent_n)
+        recent5 = grp.tail(max(recent_n, 5))
 
         pf_recent = recent["PointsFor"].values
         pa_recent = recent["PointsAgainst"].values
         margin_recent = recent["Margin"].values
+
+        pf_recent5 = recent5["PointsFor"].values
+        pa_recent5 = recent5["PointsAgainst"].values
+        margin_recent5 = recent5["Margin"].values
 
         pf_all = grp["PointsFor"].values
         pa_all = grp["PointsAgainst"].values
@@ -47,12 +53,18 @@ def build_team_features(games_long: pd.DataFrame, season: int, recent_n: int, al
             {
                 "Season": season,
                 "TeamID": int(team_id),
+                "games_played": int(len(grp)),
                 "recent_avg_for": float(np.mean(pf_recent)) if len(pf_recent) else np.nan,
                 "recent_avg_against": float(np.mean(pa_recent)) if len(pa_recent) else np.nan,
                 "recent_avg_margin": float(np.mean(margin_recent)) if len(margin_recent) else np.nan,
                 "recent_std_for": float(np.std(pf_recent, ddof=0)) if len(pf_recent) else np.nan,
+                "recent5_avg_for": float(np.mean(pf_recent5)) if len(pf_recent5) else np.nan,
+                "recent5_avg_against": float(np.mean(pa_recent5)) if len(pa_recent5) else np.nan,
+                "recent5_avg_margin": float(np.mean(margin_recent5)) if len(margin_recent5) else np.nan,
                 "season_win_pct": float(np.mean(win_all)) if len(win_all) else np.nan,
                 "season_avg_margin": float(np.mean(margin_all)) if len(margin_all) else np.nan,
+                "season_avg_for": float(np.mean(pf_all)) if len(pf_all) else np.nan,
+                "season_avg_against": float(np.mean(pa_all)) if len(pa_all) else np.nan,
                 "lambda_for": lam_for,
                 "lambda_for_ci_low": lam_for_low,
                 "lambda_for_ci_high": lam_for_high,
@@ -75,12 +87,18 @@ def attach_team_features(matchups, team_features_m, team_features_w, seeds_m, se
     low = team_features_all.rename(
         columns={
             "TeamID": "TeamIDLow",
+            "games_played": "low_games_played",
             "recent_avg_for": "low_recent_avg_for",
             "recent_avg_against": "low_recent_avg_against",
             "recent_avg_margin": "low_recent_avg_margin",
             "recent_std_for": "low_recent_std_for",
+            "recent5_avg_for": "low_recent5_avg_for",
+            "recent5_avg_against": "low_recent5_avg_against",
+            "recent5_avg_margin": "low_recent5_avg_margin",
             "season_win_pct": "low_season_win_pct",
             "season_avg_margin": "low_season_avg_margin",
+            "season_avg_for": "low_season_avg_for",
+            "season_avg_against": "low_season_avg_against",
             "lambda_for": "low_lambda_for",
             "lambda_for_ci_low": "low_lambda_for_ci_low",
             "lambda_for_ci_high": "low_lambda_for_ci_high",
@@ -93,12 +111,18 @@ def attach_team_features(matchups, team_features_m, team_features_w, seeds_m, se
     high = team_features_all.rename(
         columns={
             "TeamID": "TeamIDHigh",
+            "games_played": "high_games_played",
             "recent_avg_for": "high_recent_avg_for",
             "recent_avg_against": "high_recent_avg_against",
             "recent_avg_margin": "high_recent_avg_margin",
             "recent_std_for": "high_recent_std_for",
+            "recent5_avg_for": "high_recent5_avg_for",
+            "recent5_avg_against": "high_recent5_avg_against",
+            "recent5_avg_margin": "high_recent5_avg_margin",
             "season_win_pct": "high_season_win_pct",
             "season_avg_margin": "high_season_avg_margin",
+            "season_avg_for": "high_season_avg_for",
+            "season_avg_against": "high_season_avg_against",
             "lambda_for": "high_lambda_for",
             "lambda_for_ci_low": "high_lambda_for_ci_low",
             "lambda_for_ci_high": "high_lambda_for_ci_high",
@@ -113,48 +137,12 @@ def attach_team_features(matchups, team_features_m, team_features_w, seeds_m, se
 
     out = (
         matchups.merge(
-            low[
-                [
-                    "Gender",
-                    "Season",
-                    "TeamIDLow",
-                    "low_recent_avg_for",
-                    "low_recent_avg_against",
-                    "low_recent_avg_margin",
-                    "low_recent_std_for",
-                    "low_season_win_pct",
-                    "low_season_avg_margin",
-                    "low_lambda_for",
-                    "low_lambda_for_ci_low",
-                    "low_lambda_for_ci_high",
-                    "low_lambda_against",
-                    "low_lambda_against_ci_low",
-                    "low_lambda_against_ci_high",
-                ]
-            ],
+            low,
             on=["Gender", "Season", "TeamIDLow"],
             how="left",
         )
         .merge(
-            high[
-                [
-                    "Gender",
-                    "Season",
-                    "TeamIDHigh",
-                    "high_recent_avg_for",
-                    "high_recent_avg_against",
-                    "high_recent_avg_margin",
-                    "high_recent_std_for",
-                    "high_season_win_pct",
-                    "high_season_avg_margin",
-                    "high_lambda_for",
-                    "high_lambda_for_ci_low",
-                    "high_lambda_for_ci_high",
-                    "high_lambda_against",
-                    "high_lambda_against_ci_low",
-                    "high_lambda_against_ci_high",
-                ]
-            ],
+            high,
             on=["Gender", "Season", "TeamIDHigh"],
             how="left",
         )
@@ -175,10 +163,20 @@ def attach_team_features(matchups, team_features_m, team_features_w, seeds_m, se
         "high_recent_avg_margin": 0.0,
         "low_recent_std_for": 12.0,
         "high_recent_std_for": 12.0,
+        "low_recent5_avg_for": cfg["fallback_points_for"],
+        "high_recent5_avg_for": cfg["fallback_points_for"],
+        "low_recent5_avg_against": cfg["fallback_points_against"],
+        "high_recent5_avg_against": cfg["fallback_points_against"],
+        "low_recent5_avg_margin": 0.0,
+        "high_recent5_avg_margin": 0.0,
         "low_season_win_pct": 0.5,
         "high_season_win_pct": 0.5,
         "low_season_avg_margin": 0.0,
         "high_season_avg_margin": 0.0,
+        "low_season_avg_for": cfg["fallback_points_for"],
+        "high_season_avg_for": cfg["fallback_points_for"],
+        "low_season_avg_against": cfg["fallback_points_against"],
+        "high_season_avg_against": cfg["fallback_points_against"],
         "low_lambda_for": cfg["fallback_points_for"],
         "high_lambda_for": cfg["fallback_points_for"],
         "low_lambda_against": cfg["fallback_points_against"],
@@ -196,24 +194,45 @@ def attach_team_features(matchups, team_features_m, team_features_w, seeds_m, se
     }
 
     for col, val in fill_values.items():
-        out[col] = out[col].fillna(val)
+        if col in out.columns:
+            out[col] = out[col].fillna(val)
 
     return out
 
 
 def make_matchup_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
+
     out["recent_offense_diff"] = out["low_recent_avg_for"] - out["high_recent_avg_for"]
     out["recent_defense_diff"] = out["high_recent_avg_against"] - out["low_recent_avg_against"]
     out["recent_net_rating_diff"] = out["low_recent_avg_margin"] - out["high_recent_avg_margin"]
+
+    out["recent5_offense_diff"] = out["low_recent5_avg_for"] - out["high_recent5_avg_for"]
+    out["recent5_defense_diff"] = out["high_recent5_avg_against"] - out["low_recent5_avg_against"]
+    out["recent5_net_rating_diff"] = out["low_recent5_avg_margin"] - out["high_recent5_avg_margin"]
+
     out["season_win_pct_diff"] = out["low_season_win_pct"] - out["high_season_win_pct"]
     out["season_avg_margin_diff"] = out["low_season_avg_margin"] - out["high_season_avg_margin"]
+    out["season_offense_diff"] = out["low_season_avg_for"] - out["high_season_avg_for"]
+    out["season_defense_diff"] = out["high_season_avg_against"] - out["low_season_avg_against"]
+
     out["seed_diff"] = out["high_seed"] - out["low_seed"]
+
     out["low_expected_points_matchup"] = (out["low_lambda_for"] + out["high_lambda_against"]) / 2.0
     out["high_expected_points_matchup"] = (out["high_lambda_for"] + out["low_lambda_against"]) / 2.0
     out["matchup_attack_vs_defense_diff"] = out["low_expected_points_matchup"] - out["high_expected_points_matchup"]
+
     out["consistency_diff"] = out["high_recent_std_for"] - out["low_recent_std_for"]
+
     out["low_ci_width"] = out["low_lambda_for_ci_high"] - out["low_lambda_for_ci_low"]
     out["high_ci_width"] = out["high_lambda_for_ci_high"] - out["high_lambda_for_ci_low"]
     out["ci_width_diff"] = out["high_ci_width"] - out["low_ci_width"]
+
+    out["games_played_diff"] = out["low_games_played"] - out["high_games_played"]
+
+    if "low_rank" in out.columns and "high_rank" in out.columns:
+        out["rank_diff"] = out["low_rank"] - out["high_rank"]
+    else:
+        out["rank_diff"] = 0.0
+
     return out
