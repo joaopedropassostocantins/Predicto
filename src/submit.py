@@ -1,6 +1,3 @@
-# src/submit.py
-# SUBSTITUA O ARQUIVO INTEIRO
-
 import pandas as pd
 
 from src.config import CONFIG
