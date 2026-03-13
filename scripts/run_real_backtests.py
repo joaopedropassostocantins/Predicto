@@ -1,18 +1,20 @@
+"""
+scripts/run_real_backtests.py
+==============================
+Standalone backtest runner.  For the full pipeline (backtest + submission),
+use run_pipeline_2026.py instead.
+"""
 
 import sys
 import os
-import pandas as pd
 
-# Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.backtest import rolling_backtest, save_backtest_outputs
 from src.config import CONFIG
 
+
 def main():
-    # Ensure data_dir is correct for the environment
-    # CONFIG["data_dir"] = "data" 
-    
     print("Starting rolling backtest...")
     results = rolling_backtest(
         seasons=CONFIG["backtest_seasons"],
@@ -22,8 +24,7 @@ def main():
         calibrator_methods=CONFIG["calibration_methods"],
     )
 
-    output_dir = "backtest_results"
-    save_backtest_outputs(results, output_dir)
+    save_backtest_outputs(results, "backtest_results")
 
     print("\n===== SUMMARY =====")
     print(results["summary"].to_string(index=False))
@@ -33,6 +34,7 @@ def main():
 
     print("\n===== PROBABILITY BANDS =====")
     print(results["probability_bands"].to_string(index=False))
+
 
 if __name__ == "__main__":
     main()
