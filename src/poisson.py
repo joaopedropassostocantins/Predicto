@@ -1,71 +1,116 @@
+# src/poisson.py
+
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
-from src.config import CONFIG
-from src.utils import clip_probs, sigmoid
+from scipy.stats import chi2, poisson
 
-def poisson_match_win_probability(lambda_a: float, lambda_b: float, max_points: int = CONFIG["max_points_poisson"]) -> float:
+
+def poisson_rate_ci(scores, alpha=0.10):
+    scores = np.asarray(scores, dtype=float)
+    n = len(scores)
+    if n == 0:
+        return np.nan, np.nan, np.nan
+
+    K = scores.sum()
+    lam_hat = K / n
+
+    if K <= 0:
+        lower = 0.0
+    else:
+        lower = 0.5 * chi2.ppf(alpha / 2.0, 2.0 * K) / n
+
+    upper = 0.5 * chi2.ppf(1.0 - alpha / 2.0, 2.0 * (K + 1)) / n
+    return float(lam_hat), float(lower), float(upper)
+
+
+def build_window_stats(team_games: pd.DataFrame, window, alpha=0.10):
+    g = team_games.sort_values("DayNum")
+    use = g if window == "season" else g.tail(int(window))
+
+    pf = use["PointsFor"].to_numpy(dtype=float)
+    pa = use["PointsAgainst"].to_numpy(dtype=float)
+
+    lam_for, lam_for_lo, lam_for_hi = poisson_rate_ci(pf, alpha=alpha)
+    lam_against, lam_against_lo, lam_against_hi = poisson_rate_ci(pa, alpha=alpha)
+
+    return {
+        "lambda_for": lam_for,
+        "lambda_for_ci_low": lam_for_lo,
+        "lambda_for_ci_high": lam_for_hi,
+        "lambda_against": lam_against,
+        "lambda_against_ci_low": lam_against_lo,
+        "lambda_against_ci_high": lam_against_hi,
+    }
+
+
+def poisson_match_distribution(lambda_low: float, lambda_high: float, max_points: int = 220):
     pts = np.arange(0, max_points + 1)
-    pa = poisson.pmf(pts, lambda_a)
-    pb = poisson.pmf(pts, lambda_b)
+    p_low = poisson.pmf(pts, lambda_low)
+    p_high = poisson.pmf(pts, lambda_high)
 
-    joint = np.outer(pa, pb)
-    p_a_gt_b = np.tril(joint, k=-1).sum()
+    joint = np.outer(p_low, p_high)
+
+    p_low_gt = np.tril(joint, k=-1).sum()
     p_tie = np.trace(joint)
-    p_b_gt_a = np.triu(joint, k=1).sum()
+    p_high_gt = np.triu(joint, k=1).sum()
 
-    total = p_a_gt_b + p_tie + p_b_gt_a
+    total = p_low_gt + p_tie + p_high_gt
     if total > 0:
-        p_a_gt_b /= total
+        p_low_gt /= total
         p_tie /= total
-        p_b_gt_a /= total
+        p_high_gt /= total
 
-    return float(p_a_gt_b + 0.5 * p_tie)
+    p_low_win = p_low_gt + 0.5 * p_tie
+    p_high_win = p_high_gt + 0.5 * p_tie
 
-def calculate_lambda(points_for_avg, points_against_avg, league_avg_points):
-    # Basic lambda calculation: (Team A Offense * Team B Defense) / League Average
-    # Here we simplify: lambda = (points_for_avg + points_against_avg_opp) / 2
-    # A more robust version would use offensive and defensive ratings.
-    return (points_for_avg + points_against_avg) / 2.0
+    exp_low = float((pts * p_low).sum())
+    exp_high = float((pts * p_high).sum())
 
-def compute_poisson_features(df, cfg):
+    return {
+        "p_low_win": float(p_low_win),
+        "p_high_win": float(p_high_win),
+        "p_tie": float(p_tie),
+        "exp_low": exp_low,
+        "exp_high": exp_high,
+        "expected_margin": exp_low - exp_high,
+    }
+
+
+def add_poisson_matchup_features(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     out = df.copy()
-    
-    windows = cfg.get("poisson_windows", [3, 5, "season"])
-    
-    for window in windows:
-        suffix = f"_{window}" if window != "season" else "_season"
-        p_list = []
-        
-        for row in out.itertuples(index=False):
-            # Extract points for and against based on window
-            if window == "season":
-                pf_low = getattr(row, "season_points_for_low")
-                pa_low = getattr(row, "season_points_against_low")
-                pf_high = getattr(row, "season_points_for_high")
-                pa_high = getattr(row, "season_points_against_high")
-            else:
-                # Assuming these features exist in the dataframe
-                pf_low = getattr(row, f"recent{window}_points_for_low", getattr(row, "season_points_for_low"))
-                pa_low = getattr(row, f"recent{window}_points_against_low", getattr(row, "season_points_against_low"))
-                pf_high = getattr(row, f"recent{window}_points_for_high", getattr(row, "season_points_for_high"))
-                pa_high = getattr(row, f"recent{window}_points_against_high", getattr(row, "season_points_against_high"))
-            
-            lambda_low = calculate_lambda(pf_low, pa_high, 70.0)
-            lambda_high = calculate_lambda(pf_high, pa_low, 70.0)
-            
-            p = poisson_match_win_probability(lambda_low, lambda_high, cfg["max_points_poisson"])
-            p_list.append(p)
-            
-        out[f"p_poisson{suffix}"] = p_list
-        
-    # Weighted blend of Poisson probabilities
-    weights = cfg.get("poisson_blend_weights", {"recent3": 0.4, "recent5": 0.3, "season": 0.3})
-    out["p_poisson_blend"] = (
-        weights.get("recent3", 0) * out.get("p_poisson_3", out["p_poisson_season"]) +
-        weights.get("recent5", 0) * out.get("p_poisson_5", out["p_poisson_season"]) +
-        weights.get("season", 0) * out["p_poisson_season"]
+
+    weights = cfg["poisson_blend_weights"]
+    total = sum(weights.values())
+    w3 = weights["recent3"] / total
+    w5 = weights["recent5"] / total
+    ws = weights["season"] / total
+
+    out["poisson_lambda_low"] = (
+        w3 * ((out["recent3_lambda_for_low"] + out["recent3_lambda_against_high"]) / 2.0)
+        + w5 * ((out["recent5_lambda_for_low"] + out["recent5_lambda_against_high"]) / 2.0)
+        + ws * ((out["season_lambda_for_low"] + out["season_lambda_against_high"]) / 2.0)
     )
-    
+
+    out["poisson_lambda_high"] = (
+        w3 * ((out["recent3_lambda_for_high"] + out["recent3_lambda_against_low"]) / 2.0)
+        + w5 * ((out["recent5_lambda_for_high"] + out["recent5_lambda_against_low"]) / 2.0)
+        + ws * ((out["season_lambda_for_high"] + out["season_lambda_against_low"]) / 2.0)
+    )
+
+    pois = out.apply(
+        lambda r: poisson_match_distribution(
+            float(r["poisson_lambda_low"]),
+            float(r["poisson_lambda_high"]),
+            max_points=cfg["max_points_poisson"],
+        ),
+        axis=1,
+    )
+
+    pois_df = pd.DataFrame(list(pois))
+    out["poisson_win_prob"] = pois_df["p_low_win"].values
+    out["poisson_expected_margin"] = pois_df["expected_margin"].values
+    out["poisson_win_prob_centered"] = out["poisson_win_prob"] - 0.5
+
     return out
