@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import os
@@ -16,6 +17,7 @@ from src.data import (
 from src.features import build_team_features, attach_team_features, make_matchup_features
 from src.metrics import full_metric_bundle, probability_band_report
 from src.model import compute_all_probabilities
+from src.utils import clip_probs, sigmoid
 
 
 def build_prediction_frame_asof(
@@ -32,7 +34,8 @@ def build_prediction_frame_asof(
 
     pred_df = attach_team_features(eval_df, m_features, w_features, seeds_m, seeds_w, cfg)
     pred_df = make_matchup_features(pred_df)
-    pred_df = compute_all_probabilities(pred_df, cfg)
+    # If we are in a backtest fold, we might want to pass previous seasons as training data
+    # For simplicity in this function, we'll handle training data in rolling_backtest
     return pred_df
 
 
@@ -85,10 +88,20 @@ def rolling_backtest(
 
     for i, season in enumerate(seasons):
         fold_df = raw_frames_by_season[season].copy()
+        
+        if i >= 1:
+            train_df = pd.concat([raw_frames_by_season[s] for s in seasons[:i]], ignore_index=True)
+            fold_df = compute_all_probabilities(fold_df, cfg, train_df=train_df)
+        else:
+            fold_df = compute_all_probabilities(fold_df, cfg)
+            
         fold_df["PredRaw"] = fold_df["Pred"]
 
         if calibrate and i >= 1:
             train_df = pd.concat([raw_frames_by_season[s] for s in seasons[:i]], ignore_index=True)
+            # Re-compute probabilities for train_df to ensure no leakage and consistent features
+            # This is a bit redundant but ensures the calibrator sees the same model output distribution
+            train_df = compute_all_probabilities(train_df, cfg)
 
             best_cal = choose_best_calibrator(
                 p_train=train_df["Pred"].values,

@@ -1,3 +1,4 @@
+
 CONFIG = {
     "data_dir": "/kaggle/input/competitions/march-machine-learning-mania-2026",
     "target_season": 2026,
@@ -6,35 +7,13 @@ CONFIG = {
     "max_points_poisson": 220,
     "pred_clip_min": 0.02,
     "pred_clip_max": 0.98,
-    "temperature_manual": 12.0,
-    "temperature_poisson": 8.0,
-    "seed_temperature": 3.0,
-    "rank_temperature": 12.0,
-    "blend_manual": 0.10,
-    "blend_poisson": 0.20,
-    "blend_seed": 0.55,
-    "blend_rank": 0.15,
     "fallback_points_for": 70.0,
     "fallback_points_against": 70.0,
     "fallback_seed": 8.5,
-    "weights": {
-        "recent_offense_diff": 0.30,
-        "recent_defense_diff": 0.25,
-        "recent_net_rating_diff": 0.45,
-        "recent5_offense_diff": 0.25,
-        "recent5_defense_diff": 0.20,
-        "recent5_net_rating_diff": 0.40,
-        "season_win_pct_diff": 0.80,
-        "season_avg_margin_diff": 0.90,
-        "season_offense_diff": 0.20,
-        "season_defense_diff": 0.20,
-        "seed_diff": 0.25,
-        "matchup_attack_vs_defense_diff": 0.50,
-        "consistency_diff": -0.15,
-        "ci_width_diff": -0.10,
-        "games_played_diff": 0.05,
-        "rank_diff": -0.35,
-    },
+    "poisson_windows": [3, 5, "season"], # New: multiple windows for Poisson
+    "poisson_blend_weights": {"recent3": 0.4, "recent5": 0.3, "season": 0.3}, # New: Poisson blend weights
     "backtest_seasons": [2022, 2023, 2024, 2025],
     "calibration_methods": ["identity", "platt", "isotonic"],
+    "elo_k_factor": 20, # New: Elo K-factor
+    "elo_initial_rating": 1500, # New: Elo initial rating
 }
