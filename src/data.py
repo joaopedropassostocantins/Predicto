@@ -1,4 +1,6 @@
-# src/data.py
+```python
+# PATCH OPCIONAL PARA src/data.py
+# COLE APENAS SE QUISER ADICIONAR FUNÇÕES AUXILIARES
 
 import os
 import re
