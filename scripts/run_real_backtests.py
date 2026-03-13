@@ -1,5 +1,3 @@
-# scripts/run_real_backtests.py
-
 from src.backtest import rolling_backtest, save_backtest_outputs
 from src.config import CONFIG
 
