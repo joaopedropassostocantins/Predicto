@@ -1,1 +1,44 @@
-# Predicto
+# README.md
+
+# March Machine Learning Mania 2026
+
+Repositório para participar da competição Kaggle **March Machine Learning Mania 2026** com um modelo probabilístico orientado a **Brier Score**.
+
+## Estratégia do modelo
+
+O pipeline usa:
+
+- média dos **últimos 3 jogos**
+- pontos **marcados** e **sofridos**
+- taxa **Poisson** com IC de 90%
+- expectativa de pontos por confronto:
+  - ataque do time
+  - defesa recente do adversário
+- seed do torneio
+- forma recente
+- saldo médio
+- blend entre:
+  - score manual
+  - Poisson
+  - seed
+
+## Estrutura
+
+- `requirements.txt`
+- `src/config.py`
+- `src/data.py`
+- `src/features.py`
+- `src/model.py`
+- `src/evaluate.py`
+- `src/submit.py`
+
+## Dataset esperado no Kaggle
+
+Anexe a competição oficial:
+
+`/kaggle/input/march-machine-learning-mania-2026`
+
+## Como rodar no Kaggle
+
+```bash
+python -m src.submit
