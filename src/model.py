@@ -1,6 +1,3 @@
-# src/model.py
-# SUBSTITUA O ARQUIVO INTEIRO
-
 import numpy as np
 from scipy.stats import poisson
 
@@ -80,7 +77,6 @@ def compute_rank_probability(df, cfg):
         out["p_rank"] = 0.5
         return out
 
-    # Menor rank = melhor, então inverter o sinal
     out["p_rank"] = sigmoid((-out["rank_diff"]) / cfg["rank_temperature"])
     out["p_rank"] = clip_probs(out["p_rank"], cfg["pred_clip_min"], cfg["pred_clip_max"])
     return out
