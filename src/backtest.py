@@ -1,11 +1,8 @@
-# src/backtest.py
-
 from __future__ import annotations
 
 import os
 from typing import Dict, List, Tuple
 
-import numpy as np
 import pandas as pd
 
 from src.calibration import apply_calibrator, choose_best_calibrator, calibration_table
