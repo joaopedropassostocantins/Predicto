@@ -42,3 +42,35 @@ Anexe a competição oficial:
 
 ```bash
 python -m src.submit
+
+# README.md
+# TRECHO PARA ADICIONAR OU SUBSTITUIR
+
+## Novo pipeline operacional
+
+O projeto agora possui:
+
+- `src/calibration.py`
+  - calibração `identity`, `platt` e `isotonic`
+- `src/metrics.py`
+  - Brier, accuracy, log loss, ECE, calibration slope/intercept
+- `src/backtest.py`
+  - backtest rolling por temporada
+- `src/rankings.py`
+  - suporte a ranking externo masculino via `MMasseyOrdinals.csv`
+- `scripts/run_real_backtests.py`
+  - execução única do backtest completo
+
+## Filosofia da nova versão
+
+A nova versão reduz a dependência de heurística fixa e melhora:
+- avaliação temporal
+- auditoria de calibração
+- comparabilidade entre temporadas
+- capacidade de ajuste do blend
+
+## Como rodar avaliação
+
+```bash
+python -m src.evaluate
+
