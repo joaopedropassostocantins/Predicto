@@ -1,9 +1,9 @@
 # src/config.py
 
 CONFIG = {
-    "data_dir": "/kaggle/input/competitions/march-machine-learning-mania-2026",
-    "target_season": 2026,
-    "backtest_seasons": [2022, 2023, 2024, 2025],
+    "data_dir": "/home/ubuntu/predicto_local/data",
+    "target_season": 2024,
+    "backtest_seasons": [2018, 2019, 2021, 2022, 2023],
 
     # windows
     "recent_games_window": 3,
@@ -67,12 +67,11 @@ CONFIG = {
 
     # blend final
     "blend_weights": {
-        "tabular": 0.45,
+        "xgb": 0.45,
         "poisson": 0.25,
         "manual": 0.10,
-        "seed": 0.08,
-        "elo": 0.07,
-        "rank": 0.05,
+        "seed": 0.10,
+        "elo": 0.10,
     },
 
     # manual weights

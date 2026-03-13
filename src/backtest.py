@@ -85,12 +85,20 @@ def rolling_backtest(
 
         fold_df["PredRaw"] = fold_df["Pred"]
 
-        if calibrate and i >= 1:
+        if calibrate and i >= 2:
+            # Use all previous seasons except the last one for training the calibrator
+            # Use the last season for validation to choose the best calibrator
+            cal_train_df = pd.concat([raw_frames_by_season[s] for s in seasons[:i-1]], ignore_index=True)
+            cal_train_df = compute_all_probabilities(cal_train_df, cfg, train_df=None)
+            
+            cal_valid_df = raw_frames_by_season[seasons[i-1]].copy()
+            cal_valid_df = compute_all_probabilities(cal_valid_df, cfg, train_df=cal_train_df)
+
             best_cal = choose_best_calibrator(
-                p_train=train_df["Pred"].values,
-                y_train=train_df["ActualLowWin"].values,
-                p_valid=fold_df["Pred"].values,
-                y_valid=fold_df["ActualLowWin"].values,
+                p_train=cal_train_df["Pred"].values,
+                y_train=cal_train_df["ActualLowWin"].values,
+                p_valid=cal_valid_df["Pred"].values,
+                y_valid=cal_valid_df["ActualLowWin"].values,
                 scorer_fn=lambda y, p: full_metric_bundle(y, p),
                 methods=calibrator_methods or cfg["calibration_methods"],
                 cfg=cfg,

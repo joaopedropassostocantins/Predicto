@@ -40,7 +40,7 @@ def load_seeds(data_dir: str, prefix: str) -> pd.DataFrame:
     return df[["Season", "TeamID", "SeedNum"]].copy()
 
 def load_sample_submission(data_dir: str) -> pd.DataFrame:
-    return pd.read_csv(os.path.join(data_dir, "SampleSubmissionStage2.csv"))
+    return pd.read_csv(os.path.join(data_dir, "sample_submission.csv"))
 
 def parse_submission_ids(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()

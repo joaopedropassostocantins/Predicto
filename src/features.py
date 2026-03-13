@@ -25,6 +25,7 @@ def build_team_features(games_df: pd.DataFrame, season: int, recent_games_window
         )
         .reset_index()
     )
+    season_stats["Season"] = season
     season_stats["season_win_pct"] = season_stats["season_wins"] / season_stats["season_games_played"]
 
     for w in [3, 5]:
