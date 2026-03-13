@@ -1,4 +1,4 @@
-# Predicto
+readme_text = r'''# Predicto
 
 Pipeline probabilístico para a competição **March Machine Learning Mania 2026** no Kaggle, com foco em:
 
