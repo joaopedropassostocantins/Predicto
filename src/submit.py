@@ -1,9 +1,11 @@
 # src/submit.py
+# SUBSTITUA O ARQUIVO INTEIRO
+
+import pandas as pd
 
 from src.config import CONFIG
-from src.data import load_sample_submission, parse_submission_ids
-from src.data import load_regular_season_detailed, load_seeds
-from src.features import build_team_features, attach_team_features, make_matchup_features
+from src.data import load_regular_season_detailed, load_sample_submission, load_seeds, parse_submission_ids
+from src.features import attach_team_features, build_team_features, make_matchup_features
 from src.model import compute_all_probabilities
 
 
@@ -29,7 +31,8 @@ def main():
     submission = pred_df[["ID", "Pred"]].copy()
     submission.to_csv("/kaggle/working/submission.csv", index=False)
 
-    print(submission.head())
+    cols_to_show = [c for c in ["ID", "p_manual", "p_poisson", "p_seed", "p_rank", "Pred"] if c in pred_df.columns]
+    print(pred_df[cols_to_show].head(10))
     print("\nArquivo salvo em /kaggle/working/submission.csv")
 
 
