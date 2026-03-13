@@ -1,5 +1,5 @@
-```txt
 # requirements.txt
+# SUBSTITUA O ARQUIVO INTEIRO
 
 numpy
 pandas
