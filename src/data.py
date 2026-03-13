@@ -1,6 +1,3 @@
-# src/data.py
-# SUBSTITUA O ARQUIVO INTEIRO POR ESTE CONTEÚDO LIMPO
-
 import os
 import re
 import pandas as pd
