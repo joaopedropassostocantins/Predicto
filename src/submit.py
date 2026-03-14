@@ -1,4 +1,10 @@
-# src/submit.py — Submission generation for March ML Mania 2026 — v3.0
+# src/submit.py — Submission generation v4.0
+#
+# Changes from v3:
+#   - Calibrator selection: log_loss as primary criterion (was Brier).
+#   - Submission reporting: includes log_loss and ECE alongside Brier.
+#   - validate_submission() added: checks format, range, NaN before writing.
+#   - Consistent with v4 pipeline (new feature set, new blend weights).
 
 from __future__ import annotations
 
@@ -21,19 +27,23 @@ from src.metrics import full_metric_bundle
 from src.ratings import precompute_starting_elo
 
 
+# ---------------------------------------------------------------------------
+# Submission generation pipeline
+# ---------------------------------------------------------------------------
+
 def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.DataFrame:
     """
-    Full submission pipeline for the target season.
+    Full submission generation pipeline for the target season.
 
     Steps
     -----
-    1. Load all regular season + tourney data.
-    2. Pre-compute cross-season Elo over the full history.
-    3. Build features for every backtest season (with labels).
-    4. Train XGBoost on ALL backtest seasons.
-    5. Select best calibrator using a rolling held-out validation scheme.
-    6. Build features for the target season (from the sample submission).
-    7. Apply model + calibrator → write submission.csv.
+    1. Load all regular-season + tourney data.
+    2. Pre-compute cross-season Elo over full history.
+    3. Build labelled feature frames for all backtest seasons.
+    4. Select best calibrator via rolling held-out validation (log_loss criterion).
+    5. Train final XGBoost on ALL backtest seasons.
+    6. Build features for target season (from sample submission).
+    7. Apply model + calibrator → validate → write submission.csv.
     """
     print(f"=== Generating submission for season {cfg['target_season']} ===")
 
@@ -48,6 +58,14 @@ def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.Da
 
     # ── 2. Cross-season Elo ───────────────────────────────────────────────
     print("Pre-computing cross-season Elo...")
+    elo_params = dict(
+        k_factor=cfg["elo_k_factor"],
+        initial_rating=cfg["elo_initial_rating"],
+        carry_factor=cfg["elo_carry_factor"],
+        use_margin=cfg.get("elo_use_margin", True),
+        margin_cap=cfg.get("elo_margin_cap", 15.0),
+    )
+
     def _elo_games(df):
         return (
             df[df["Win"] == 1][["Season", "DayNum", "TeamID", "OppTeamID", "Margin"]]
@@ -56,39 +74,27 @@ def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.Da
             .reset_index(drop=True)
         )
 
-    starting_elo_m = precompute_starting_elo(
-        _elo_games(m_regular),
-        k_factor=cfg["elo_k_factor"],
-        initial_rating=cfg["elo_initial_rating"],
-        carry_factor=cfg["elo_carry_factor"],
-        use_margin=cfg.get("elo_use_margin", False),
-        margin_cap=cfg.get("elo_margin_cap", 30.0),
-    )
-    starting_elo_w = precompute_starting_elo(
-        _elo_games(w_regular),
-        k_factor=cfg["elo_k_factor"],
-        initial_rating=cfg["elo_initial_rating"],
-        carry_factor=cfg["elo_carry_factor"],
-        use_margin=cfg.get("elo_use_margin", False),
-        margin_cap=cfg.get("elo_margin_cap", 30.0),
-    )
+    starting_elo_m = precompute_starting_elo(_elo_games(m_regular), **elo_params)
+    starting_elo_w = precompute_starting_elo(_elo_games(w_regular), **elo_params)
 
-    # ── 3. Build labelled feature frames for backtest seasons ─────────────
+    # ── 3. Build labelled feature frames for backtest seasons ──────────────
     print("Building historical feature frames (with labels)...")
     backtest_seasons = cfg["backtest_seasons"]
     raw_frames: dict = {}
 
     for season in backtest_seasons:
         print(f"  Season {season}...", end=" ", flush=True)
-        eval_frames = [
-            prepare_eval_games(m_tourney, season, "M"),
-            prepare_eval_games(w_tourney, season, "W"),
-        ]
-        eval_df = pd.concat([f for f in eval_frames if len(f) > 0], ignore_index=True)
-        if len(eval_df) == 0:
+        eval_frames = []
+        for g, tourney in [("M", m_tourney), ("W", w_tourney)]:
+            ef = prepare_eval_games(tourney, season, g)
+            if len(ef) > 0:
+                eval_frames.append(ef)
+
+        if not eval_frames:
             print("no tournament data, skipping")
             continue
 
+        eval_df = pd.concat(eval_frames, ignore_index=True)
         m_feat = build_team_features(
             m_regular, season, cfg["recent_games_window"], cfg["alpha_ci"],
             starting_elo=starting_elo_m, cfg=cfg,
@@ -103,20 +109,34 @@ def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.Da
         print(f"{len(frame)} games")
 
     available_seasons = sorted(raw_frames.keys())
-    if len(available_seasons) == 0:
-        raise RuntimeError("No backtest seasons with data found.  Check data_dir.")
+    if not available_seasons:
+        raise RuntimeError("No backtest seasons with data found. Check data_dir.")
 
-    # ── 4. Select best calibrator using rolling held-out validation ────────
-    print("Selecting calibrator via rolling validation...")
-    best_cal = _select_calibrator(raw_frames, available_seasons, cfg)
-    print(f"Best calibrator: {best_cal.method}  "
-          f"(val Brier={best_cal.metrics['brier']:.4f})")
+    # ── 4. Compute OOF predictions for calibrator selection ────────────────
+    print("Computing OOF predictions for calibrator selection...")
+    oof_cache: dict = {}
+    for i, season in enumerate(available_seasons):
+        fold = raw_frames[season].copy()
+        if i >= 1:
+            hist = pd.concat([raw_frames[s] for s in available_seasons[:i]], ignore_index=True)
+            oof_cache[season] = compute_all_probabilities(fold, cfg, train_df=hist)
+        else:
+            oof_cache[season] = compute_all_probabilities(fold, cfg, train_df=None)
 
-    # ── 5. Train final XGBoost on ALL backtest seasons ────────────────────
-    print("Training final XGBoost on all backtest seasons...")
+    # Select calibrator using last season as validation, all others as training
+    print("Selecting calibrator...")
+    best_cal = _select_calibrator_from_oof(oof_cache, available_seasons, cfg)
+    print(
+        f"Best calibrator: {best_cal.method}  "
+        f"(val LogLoss={best_cal.metrics.get('log_loss', float('nan')):.4f}  "
+        f"Brier={best_cal.metrics.get('brier', float('nan')):.4f})"
+    )
+
+    # ── 5. Train final model on ALL backtest seasons ───────────────────────
+    print("Training final model on all backtest seasons...")
     all_train = pd.concat([raw_frames[s] for s in available_seasons], ignore_index=True)
 
-    # ── 6. Build target-season features from sample submission ────────────
+    # ── 6. Build target-season features ───────────────────────────────────
     target = cfg["target_season"]
     print(f"Building features for target season {target}...")
 
@@ -125,7 +145,6 @@ def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.Da
     sub_target = sub_df[sub_df["Season"] == target].copy()
 
     if len(sub_target) == 0:
-        # Fallback: generate all matchups from seeds if submission is empty
         print("  Sample submission has no rows for target season. Generating from seeds.")
         sub_target = _generate_all_matchups(target, m_seeds, w_seeds)
 
@@ -141,96 +160,104 @@ def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.Da
     pred_df = attach_team_features(sub_target, m_feat_t, w_feat_t, m_seeds, w_seeds, cfg)
     pred_df = make_matchup_features(pred_df, cfg=cfg)
 
-    # ── 7. Predict and calibrate ──────────────────────────────────────────
+    # ── 7. Predict + calibrate + validate ─────────────────────────────────
     pred_df = compute_all_probabilities(pred_df, cfg, train_df=all_train)
-    pred_df["Pred"] = apply_calibrator(best_cal.fitted, pred_df["Pred"].values)
+    pred_df["PredRaw"] = pred_df["Pred"].copy()
+    pred_df["Pred"]    = apply_calibrator(best_cal.fitted, pred_df["Pred"].values)
 
-    # Validate output
-    assert pred_df["Pred"].isna().sum() == 0, "NaN values in predictions!"
-    assert (pred_df["Pred"] >= 0).all() and (pred_df["Pred"] <= 1).all(), \
-        "Predictions out of [0, 1] range!"
+    # Validate
+    validate_submission(pred_df)
 
+    # Write
     submission = pred_df[["ID", "Pred"]].copy()
     submission.to_csv(output_path, index=False)
-    print(f"Submission saved to {output_path}  ({len(submission)} rows)")
-    print(f"Pred stats: min={submission['Pred'].min():.4f}  "
-          f"max={submission['Pred'].max():.4f}  "
+
+    print(f"\nSubmission saved: {output_path}  ({len(submission)} rows)")
+    print(f"Pred range: [{submission['Pred'].min():.4f}, {submission['Pred'].max():.4f}]  "
           f"mean={submission['Pred'].mean():.4f}")
     return submission
 
 
 # ---------------------------------------------------------------------------
-# Calibrator selection helper
+# Calibrator selection (log_loss primary)
 # ---------------------------------------------------------------------------
 
-def _select_calibrator(raw_frames: dict, seasons: list, cfg: dict):
+def _select_calibrator_from_oof(oof_cache: dict, seasons: list, cfg: dict):
     """
-    Select the best calibrator using a rolling held-out scheme.
+    Select best calibrator using rolling OOF predictions.
 
-    We use the LAST season in `seasons` as the validation set.
-    XGBoost is trained on all preceding seasons to produce the
-    validation predictions that the calibrators are evaluated on.
+    Training set: OOF predictions from seasons[:-1].
+    Validation set: OOF predictions from seasons[-1].
+    Primary criterion: log_loss (v4 change from Brier).
     """
-    from src.calibration import choose_best_calibrator
-    from src.models import compute_all_probabilities
+    from src.calibration import fit_calibrator, CalibrationResult
 
     if len(seasons) < 2:
-        # Not enough seasons for calibration; return identity
-        from src.calibration import fit_calibrator
-        dummy_p = np.full(10, 0.5)
-        dummy_y = np.array([0, 1] * 5)
-        cal = fit_calibrator("identity", dummy_p, dummy_y, cfg=cfg)
-        from src.calibration import CalibrationResult
+        cal = fit_calibrator("identity", np.full(10, 0.5), np.array([0, 1] * 5), cfg=cfg)
         return CalibrationResult(
             method="identity", fitted=cal,
-            metrics={"brier": 0.25, "accuracy": 0.5, "log_loss": 0.693}
+            metrics={"brier": 0.25, "log_loss": 0.693, "accuracy": 0.5, "ece": 0.1, "auc": 0.5},
         )
 
-    val_season   = seasons[-1]
+    val_season    = seasons[-1]
     train_seasons = seasons[:-1]
 
-    # OOF predictions for calibrator training (rolling)
-    cal_oof = []
-    for i, s in enumerate(train_seasons):
-        fold = raw_frames[s].copy()
-        if i >= 1:
-            hist = pd.concat([raw_frames[ss] for ss in train_seasons[:i]], ignore_index=True)
-            fold = compute_all_probabilities(fold, cfg, train_df=hist)
-        else:
-            fold = compute_all_probabilities(fold, cfg, train_df=None)
-        cal_oof.append(fold)
-    cal_train_df = pd.concat(cal_oof, ignore_index=True)
-
-    # Validation predictions: XGB trained on all train_seasons
-    val_hist = pd.concat([raw_frames[s] for s in train_seasons], ignore_index=True)
-    val_df   = compute_all_probabilities(raw_frames[val_season].copy(), cfg, train_df=val_hist)
+    cal_train_df = pd.concat([oof_cache[s] for s in train_seasons], ignore_index=True)
+    cal_val_df   = oof_cache[val_season]
 
     return choose_best_calibrator(
         p_train=cal_train_df["Pred"].values,
         y_train=cal_train_df["ActualLowWin"].values,
-        p_valid=val_df["Pred"].values,
-        y_valid=val_df["ActualLowWin"].values,
+        p_valid=cal_val_df["Pred"].values,
+        y_valid=cal_val_df["ActualLowWin"].values,
         scorer_fn=lambda y, p: full_metric_bundle(y, p),
         methods=cfg.get("calibration_methods", ["identity", "temperature", "platt", "isotonic"]),
         cfg=cfg,
     )
 
 
-def _generate_all_matchups(season: int, m_seeds: pd.DataFrame, w_seeds: pd.DataFrame) -> pd.DataFrame:
-    """Generate all possible tournament matchup pairs from seed data."""
+# ---------------------------------------------------------------------------
+# Validation and fallback helpers
+# ---------------------------------------------------------------------------
+
+def validate_submission(pred_df: pd.DataFrame) -> None:
+    """
+    Validate submission frame before writing.
+
+    Checks:
+      - No NaN in Pred column.
+      - All predictions in [0, 1].
+      - ID column present.
+    Raises AssertionError on any violation.
+    """
+    assert "Pred" in pred_df.columns, "Missing 'Pred' column"
+    assert "ID"   in pred_df.columns, "Missing 'ID' column"
+    n_nan = int(pred_df["Pred"].isna().sum())
+    assert n_nan == 0, f"{n_nan} NaN values in predictions"
+    assert (pred_df["Pred"] >= 0).all() and (pred_df["Pred"] <= 1).all(), \
+        "Predictions out of [0, 1] range"
+    assert len(pred_df) > 0, "Empty submission"
+
+
+def _generate_all_matchups(
+    season: int,
+    m_seeds: pd.DataFrame,
+    w_seeds: pd.DataFrame,
+) -> pd.DataFrame:
+    """Generate all possible tournament matchup pairs from seed data (fallback)."""
     rows = []
     for gender, seeds_df in [("M", m_seeds), ("W", w_seeds)]:
         teams = sorted(seeds_df[seeds_df["Season"] == season]["TeamID"].unique())
         for i, t1 in enumerate(teams):
             for t2 in teams[i + 1:]:
                 rows.append({
-                    "ID":        f"{season}_{t1}_{t2}",
-                    "Season":    season,
-                    "TeamIDLow": t1,
+                    "ID":         f"{season}_{t1}_{t2}",
+                    "Season":     season,
+                    "TeamIDLow":  t1,
                     "TeamIDHigh": t2,
-                    "Gender":    gender,
-                    "LowHome":   0,
-                    "HighHome":  0,
+                    "Gender":     gender,
+                    "LowHome":    0,
+                    "HighHome":   0,
                 })
     return pd.DataFrame(rows)
 

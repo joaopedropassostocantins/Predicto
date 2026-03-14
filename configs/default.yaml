@@ -1,0 +1,220 @@
+# configs/default.yaml — Predicto v4.0 — March Machine Learning Mania 2026
+#
+# Central configuration for the probabilistic basketball prediction pipeline.
+# All parameters documented with justifications and literature references.
+#
+# Metric hierarchy (MANDATORY):
+#   1. Log Loss  — primary objective; measures calibration quality
+#   2. Brier Score — proper scoring rule; penalises confidence errors
+#   3. ECE / Reliability curve — audits calibration per probability band
+#   4. Accuracy / AUC — secondary; never the optimisation target
+
+# ─── Competition target ────────────────────────────────────────────────────────
+target_season: 2026
+# COVID cancelled 2020 tournament; exclude from training.
+backtest_seasons: [2015, 2016, 2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025]
+genders: ["M", "W"]
+
+# ─── Data ──────────────────────────────────────────────────────────────────────
+# data_dir: null means auto-detect (Kaggle vs local) at runtime
+data_dir: null
+fallback_points_for: 70.0
+fallback_points_against: 70.0
+fallback_seed: 8.5         # median NCAA tournament seed
+fallback_elo: 1500.0       # Elo baseline = uninformative prior
+
+# ─── Feature windows ──────────────────────────────────────────────────────────
+recent_games_window: 5     # primary rolling window for recent-form features
+poisson_windows: [3, 5, "season"]
+# Blend weights for Poisson lambda windows.
+# More weight on recency; season provides long-term context.
+# Weights normalised at runtime — only ratios matter.
+# Literature: Karlis & Ntzoufras (2000) recommend higher recency weight.
+poisson_blend_weights:
+  recent3: 0.40            # highest weight: most recent form
+  recent5: 0.35            # medium-term form
+  season: 0.25             # long-term context
+
+# ─── Poisson model ────────────────────────────────────────────────────────────
+# STRATEGIC COMPONENT — never remove or reduce to <0.15 blend weight.
+# Implements multiplicative Dixon-Coles-style attack/defense decomposition.
+# Reference: Dixon & Coles (1997), Applied Statistics 46(2).
+alpha_ci: 0.10             # CI alpha for chi-squared Poisson CI
+                            # 0.10 gives 90% CI; more conservative than 0.05
+max_points_poisson: 155    # max score per team for joint distribution grid
+                            # NCAA practical max ~130; 155 gives safe margin
+                            # Was 220 (wasteful, adds numerical noise)
+# Adaptive Bayesian shrinkage: w = k / (k + n_games)
+# k=8 → ~29% shrinkage with n=20 games, ~7% with n=100 games
+# Automatically reduces shrinkage as more data accumulates
+poisson_shrinkage_k: 8.0
+# Legacy fixed shrinkage (used when poisson_shrinkage_k is None)
+poisson_shrinkage: 0.20
+
+# ─── Probability clipping ─────────────────────────────────────────────────────
+# Conservative bounds to avoid log(0) blowup while preserving signal.
+# Kaggle March Madness standard range: [0.025, 0.975].
+# Wider range [0.05, 0.95] recommended to avoid overconfidence.
+pred_win_min: 0.05
+pred_win_max: 0.95
+pred_clip_min: 0.05        # legacy alias for backward compatibility
+pred_clip_max: 0.95        # legacy alias for backward compatibility
+
+# ─── Elo rating system ────────────────────────────────────────────────────────
+# Reference: Elo (1978), FiveThirtyEight NBA/NCAAB implementations.
+# Literature range for k_factor: 16-22 for sports applications.
+elo_initial_rating: 1500.0
+elo_k_factor: 20.0         # reduced from 25 → within literature range [16, 22]
+                            # Lower K = more stable, less volatile ratings
+elo_carry_factor: 0.82     # increased from 0.75 → more cross-season memory
+                            # new_start = 0.82 * end_elo + 0.18 * 1500
+                            # Range [0.78, 0.84] validated in sports literature
+elo_use_margin: true       # include margin of victory in Elo update
+elo_margin_cap: 15.0       # reduced from 30 → NCAA basketball practical cap
+                            # Beyond 15 pts, additional margin has diminishing
+                            # signal value for future performance prediction
+# Note: margin_factor formula improved from log(m+1)/log(cap+1)
+# to (log(m+1)+1)/(log(cap+1)+1) — ensures 1-point wins still update ~45% K
+# vs only ~20% in old formula. See src/ratings.py for full explanation.
+
+# ─── Temperature scaling ──────────────────────────────────────────────────────
+# ONLY values >= 1.0 — temperature scaling reduces overconfidence.
+# A temperature T > 1 divides the logit by T, pulling probs toward 0.5.
+# NEVER use T < 1: would increase confidence in already overconfident model.
+# Reference: Guo et al. (2017), "On Calibration of Modern Neural Networks"
+temperature_candidates: [1.00, 1.05, 1.08, 1.12, 1.15, 1.20, 1.25, 1.35, 1.50]
+manual_temperature: 1.12   # default; applied when auto-selection chooses T-scaling
+
+# ─── Calibration ──────────────────────────────────────────────────────────────
+calibration_methods: ["identity", "temperature", "platt", "isotonic"]
+# PRIMARY selection criterion: log_loss (not Brier)
+# Reason: log_loss is more sensitive to calibration quality at extremes.
+# A well-calibrated 90% prediction matters more than a well-calibrated 55% one.
+calibration_scorer: "log_loss"
+
+# ─── XGBoost hyperparameters ──────────────────────────────────────────────────
+# Conservative, regularised booster optimised for probability calibration.
+# References: Chen & Guestrin (2016); Fernandez-Delgado et al. (2014).
+# Key principle: avoid aggressive trees; seek stable, generalisable predictions.
+tabular_model: "xgb_or_hgb"
+xgb_params:
+  n_estimators: 800          # with early_stopping_rounds=50, actual rounds < 800
+  learning_rate: 0.03        # slow learning rate → better calibration & less overfit
+                              # Was 0.02; 0.03 trains faster without quality loss
+  max_depth: 3               # reduced from 4 → shallower = less overfit
+  min_child_weight: 6        # min samples per leaf; increased from 5
+  subsample: 0.80            # row subsampling
+  colsample_bytree: 0.70     # feature subsampling per tree
+  reg_lambda: 6.0            # L2 regularisation; was 2.0 — too weak for tabular sports data
+  reg_alpha: 0.5             # L1 regularisation; was 0.2
+  gamma: 0.2                 # min gain to split; was 0 — prevents trivial splits
+  objective: "binary:logistic"
+  eval_metric: "logloss"
+  tree_method: "hist"
+  random_state: 42
+  verbosity: 0
+  early_stopping_rounds: 50  # stop when val logloss plateaus for 50 rounds
+# Fraction of training data held out for early stopping validation
+xgb_val_fraction: 0.15
+
+# Fallback when XGBoost not installed (scikit-learn)
+hgb_params:
+  learning_rate: 0.03
+  max_depth: 3
+  max_iter: 600
+  min_samples_leaf: 20
+  l2_regularization: 2.0
+  random_state: 42
+
+# ─── Blend weights ────────────────────────────────────────────────────────────
+# Validated starting point via temporal cross-validation.
+# KEY CHANGES from v3:
+#   - Seed REMOVED from blend: seed is already a feature in XGBoost.
+#     Including it separately causes double-counting (seed→XGB→blend AND seed→blend).
+#   - XGB weight REDUCED: 0.55 → 0.34 (prevents single-model dominance)
+#   - Elo weight INCREASED: 0.10 → 0.30 (Elo is a strong, temporally stable signal)
+#   - Poisson weight UNCHANGED: 0.20 → 0.24 (strategic; never reduce below 0.15)
+#   - Manual added: 0.12 (disciplined heuristics; disciplined contribution)
+# Total: 0.30 + 0.24 + 0.34 + 0.12 = 1.00
+blend_weights:
+  elo: 0.30
+  poisson: 0.24
+  xgb: 0.34
+  manual: 0.12
+
+# ─── Manual model feature weights ─────────────────────────────────────────────
+# Organised by predictive value and leakage risk.
+# Rules: no signal already dominant in Elo/XGB; total weight stays low in ensemble.
+# All weights normalised at runtime — only relative magnitudes matter.
+manual_feature_weights:
+  # Priority HIGH: structural efficiency signals (most predictive for tournament)
+  matchup_diff: 1.20              # offense vs opponent defense (interaction term)
+  season_margin_diff: 1.10        # overall season dominance
+  quality_win_pct_diff: 1.00      # quality of wins (vs above-average opponents)
+  elo_diff: 0.90                  # Elo differential (lower here; separate component)
+  # Priority MEDIUM: form and contextual signals
+  recent3_margin_diff: 0.80       # short-term form (last 3 games)
+  recent5_margin_diff: 0.70       # medium-term form (last 5 games)
+  sos_diff: 0.60                  # schedule difficulty
+  season_win_pct_diff: 0.50       # season win rate
+  # Priority LOW: potentially noisy or small-sample signals
+  close_game_win_pct_diff: 0.30   # clutch performance (high variance, small n)
+  blowout_pct_diff: 0.25          # dominance signal
+  consistency_edge: 0.20          # scoring variance difference
+  # EXCLUDED: seed_diff = 0.0 (seed already a primary XGB feature)
+  # EXCLUDED: rank_diff_signed (highly correlated with elo_diff + margin_diff)
+  # EXCLUDED: poisson_win_prob_centered (already in blend as p_poisson)
+  seed_diff: 0.00
+
+# ─── XGBoost feature columns ──────────────────────────────────────────────────
+# ORDERED by estimated importance (high → low).
+# Strict pre-game features only — no post-game information.
+feature_cols:
+  # Seeding (strongest tournament predictor; remains from bracket structure)
+  - seed_diff
+  # Elo strength
+  - elo_diff
+  # Season aggregates
+  - season_points_for_diff
+  - season_points_against_diff
+  - season_margin_diff
+  - season_win_pct_diff
+  # Recent form — window 3
+  - recent3_points_for_diff
+  - recent3_points_against_diff
+  - recent3_margin_diff
+  # Recent form — window 5
+  - recent5_points_for_diff
+  - recent5_points_against_diff
+  - recent5_margin_diff
+  # Matchup interactions
+  - matchup_diff
+  - offense_vs_defense_low
+  - offense_vs_defense_high
+  # Strength and schedule signals
+  - sos_diff
+  - quality_diff
+  - rank_diff_signed
+  # Poisson-derived structural scoring model signals
+  - poisson_lambda_low
+  - poisson_lambda_high
+  - poisson_expected_margin
+  - poisson_win_prob
+  - poisson_win_prob_centered
+  - poisson_total_points            # NEW v4: expected total combined score
+  - poisson_uncertainty             # NEW v4: std of scoring distribution
+  # Stability and consistency
+  - consistency_edge
+  # v3 trajectory features
+  - season_trajectory_diff
+  - quality_win_pct_diff
+  - blowout_pct_diff
+  - close_game_win_pct_diff
+  # NEW v4: Elo momentum and volatility
+  - elo_delta_diff                  # Elo change over last 5 games (momentum)
+  - elo_volatility_diff             # Elo std over season (consistency of level)
+  # NEW v4: EWMA-based recency weighting (alpha=0.20 → half-life ≈ 3 games)
+  - ewma_margin_diff                # EWMA of point margin
+
+# ─── Massey Ordinals ──────────────────────────────────────────────────────────
+massey_system_priority: ["POM", "SAG", "MOR", "DOL", "WOL", "RTH", "COL"]
