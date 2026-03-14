@@ -1,0 +1,183 @@
+# configs/search_spaces.yaml — Predicto v4.0
+#
+# Hyperparameter search spaces for temporal cross-validation tuning.
+# All ranges are grounded in sports analytics literature and empirical analysis.
+#
+# Tuning principle: optimise Log Loss on temporally-held-out validation sets.
+# Never tune on the target season; never shuffle temporal order.
+#
+# Reference for sports Elo tuning: Silver (2014), FiveThirtyEight.
+# Reference for XGB calibration:   Guo et al. (2017); Niculescu-Mizil & Caruana (2005).
+
+# ─── Elo search space ─────────────────────────────────────────────────────────
+elo:
+  k_factor:
+    type: float
+    min: 12.0
+    max: 28.0
+    step: 2.0
+    prior: 20.0            # FiveThirtyEight NBA uses ~20; NCAA likely similar
+    notes: "Higher K = faster adaptation, higher variance; lower K = smoother"
+  carry_factor:
+    type: float
+    min: 0.70
+    max: 0.92
+    step: 0.02
+    prior: 0.82
+    notes: "Fraction of end-of-season Elo retained; higher = more inter-season memory"
+  margin_cap:
+    type: float
+    min: 10.0
+    max: 20.0
+    step: 1.0
+    prior: 15.0
+    notes: "Cap on point margin used for MOV update; beyond cap, signal saturates"
+  use_margin:
+    type: bool
+    values: [true, false]
+    prior: true
+    notes: "Ablation: compare binary Elo vs MOV Elo"
+
+# ─── Poisson search space ─────────────────────────────────────────────────────
+poisson:
+  shrinkage_k:
+    type: float
+    min: 3.0
+    max: 25.0
+    prior: 8.0
+    notes: "Adaptive shrinkage prior: w = k / (k + n_games); higher k = more shrinkage"
+  alpha_ci:
+    type: categorical
+    values: [0.05, 0.10, 0.15, 0.20]
+    prior: 0.10
+    notes: "CI alpha for Poisson rate estimation; 0.10 = 90% CI"
+  max_points:
+    type: categorical
+    values: [140, 145, 150, 155, 160, 165, 170]
+    prior: 155
+    notes: "Grid size for joint Poisson PMF; larger = slower but more precise"
+  # Window blend weights (normalised at runtime — ratios matter, not absolutes)
+  blend_w_recent3:
+    type: float
+    min: 0.30
+    max: 0.55
+    prior: 0.40
+    notes: "Weight for 3-game window; higher = more short-term reactive"
+  blend_w_recent5:
+    type: float
+    min: 0.25
+    max: 0.45
+    prior: 0.35
+    notes: "Weight for 5-game window; medium-term form"
+  blend_w_season:
+    type: float
+    min: 0.10
+    max: 0.35
+    prior: 0.25
+    notes: "Weight for full-season window; lower = less anchored to early-season data"
+
+# ─── XGBoost search space ─────────────────────────────────────────────────────
+# Conservative ranges: we seek stability and calibration, not aggressive trees.
+# Reference: Friedman (2001) — gradient boosting for classification.
+xgb:
+  learning_rate:
+    type: float
+    min: 0.015
+    max: 0.08
+    prior: 0.03
+    log_scale: true
+    notes: "Slow learner (0.02-0.03) with early stopping preferred for calibration"
+  max_depth:
+    type: categorical
+    values: [2, 3, 4, 5]
+    prior: 3
+    notes: "Depth 3 recommended for tabular sports data; deeper = more overfit risk"
+  min_child_weight:
+    type: int
+    min: 3
+    max: 12
+    prior: 6
+    notes: "Minimum sum of instance weight per leaf; higher = more regularisation"
+  subsample:
+    type: float
+    min: 0.60
+    max: 0.90
+    prior: 0.80
+    notes: "Row subsampling; ~0.80 balances variance and computation"
+  colsample_bytree:
+    type: float
+    min: 0.50
+    max: 0.90
+    prior: 0.70
+    notes: "Feature subsampling per tree; ~0.70 prevents correlated feature dominance"
+  reg_lambda:
+    type: float
+    min: 2.0
+    max: 15.0
+    prior: 6.0
+    notes: "L2 regularisation; strongly regularise to avoid overfit on ~64 games/season"
+  reg_alpha:
+    type: float
+    min: 0.0
+    max: 4.0
+    prior: 0.5
+    notes: "L1 regularisation for feature sparsity"
+  gamma:
+    type: float
+    min: 0.0
+    max: 3.0
+    prior: 0.2
+    notes: "Min loss reduction to make further partition; 0.2 prevents trivial splits"
+  early_stopping_rounds:
+    type: categorical
+    values: [30, 40, 50, 75]
+    prior: 50
+    notes: "Patience for early stopping; 50 rounds at lr=0.03 is reasonable"
+
+# ─── Ensemble blend search space ──────────────────────────────────────────────
+# Only ratios matter (weights are normalised); but bounded ranges prevent degenerate solutions.
+# Constraint: all weights strictly positive (each component must contribute).
+blend:
+  w_elo:
+    type: float
+    min: 0.18
+    max: 0.42
+    prior: 0.30
+    notes: "Elo: strong temporally-stable baseline; too low → loses interpretability"
+  w_poisson:
+    type: float
+    min: 0.12
+    max: 0.32
+    prior: 0.24
+    notes: "Poisson: structural scoring model; never below 0.12"
+  w_xgb:
+    type: float
+    min: 0.22
+    max: 0.48
+    prior: 0.34
+    notes: "XGBoost: data-driven learner; too high → overfit dominates ensemble"
+  w_manual:
+    type: float
+    min: 0.05
+    max: 0.18
+    prior: 0.12
+    notes: "Manual heuristics: keep low; provides interpretability and outlier handling"
+
+# ─── Calibration search space ─────────────────────────────────────────────────
+calibration:
+  temperature:
+    type: float
+    min: 1.00
+    max: 1.60
+    prior: 1.12
+    notes: "T=1.0 = no change; T>1.0 = push probs toward 0.5 (reduce overconfidence)"
+  clip_min:
+    type: categorical
+    values: [0.03, 0.04, 0.05, 0.06, 0.07, 0.08]
+    prior: 0.05
+    notes: "Lower bound; 0.05 is standard Kaggle March Madness range"
+  clip_max:
+    type: categorical
+    values: [0.92, 0.93, 0.94, 0.95, 0.96, 0.97]
+    prior: 0.95
+    notes: "Upper bound; 0.95 is standard March Madness range"

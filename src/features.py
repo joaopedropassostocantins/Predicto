@@ -1,4 +1,24 @@
-# src/features.py — Feature engineering for March ML Mania 2026 — v3.0
+# src/features.py — Feature engineering v4.0
+#
+# Changes from v3:
+#   - Added EWMA (exponentially weighted moving average) for point margin
+#     alpha=0.20 → half-life ≈ 3 games (emphasises recent form)
+#   - Added elo_delta and elo_volatility from ratings.compute_season_elo()
+#   - league_avg_score injected into matchup frame for multiplicative Poisson
+#   - Better SoS computation (two-pass: league avg margin first, then SoS)
+#   - quality_proxy normalised by number of teams in season
+#   - Adaptive Poisson shrinkage (k/(k+n)) replaces fixed weight
+#   - All features strictly pre-game (no post-game leakage)
+#
+# Feature causal ordering:
+#   1. Season aggregates (all games up to pre-tournament)
+#   2. Recent form (last 3, last 5 games)
+#   3. Trajectory (late vs early season)
+#   4. Poisson lambdas (attack/defense rates, windowed)
+#   5. Elo rating (cross-season carry-over)
+#   6. Elo momentum/volatility (from Elo history)
+#   7. EWMA margin (recency-weighted form)
+#   8. Strength of schedule, quality wins (opponent-based)
 
 from __future__ import annotations
 
@@ -6,7 +26,11 @@ import numpy as np
 import pandas as pd
 
 from src.poisson import build_window_stats, add_poisson_matchup_features
-from src.ratings import calculate_elo_from_games, get_latest_elo
+from src.ratings import (
+    calculate_elo_from_games,
+    get_latest_elo,
+    compute_elo_season_features,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -24,6 +48,9 @@ def build_team_features(
     """
     Build a team-level feature frame for `season`.
 
+    All features are computed using only regular-season data available before
+    the tournament — no future information is used.
+
     Parameters
     ----------
     games_df : DataFrame
@@ -31,10 +58,8 @@ def build_team_features(
         Must have: Season, DayNum, TeamID, OppTeamID, PointsFor,
                    PointsAgainst, Margin, Win.
     starting_elo : dict, optional
-        {team_id: starting_elo} for cross-season Elo carryover.
-        If None, all teams start at elo_initial_rating (1500).
-    cfg : dict, optional
-        CONFIG dict.  Used for fallback values and Poisson settings.
+        {(season, team_id): starting_elo} for cross-season Elo carryover.
+    cfg : dict, optional  CONFIG dict.
     """
     from src.config import CONFIG as _CFG
     if cfg is None:
@@ -46,13 +71,13 @@ def build_team_features(
     season_stats = (
         season_df.groupby("TeamID")
         .agg(
-            season_points_for     = ("PointsFor",  "mean"),
+            season_points_for     = ("PointsFor",     "mean"),
             season_points_against = ("PointsAgainst", "mean"),
-            season_margin         = ("Margin",     "mean"),
-            season_wins           = ("Win",         "sum"),
-            season_games_played   = ("TeamID",      "count"),
-            season_points_for_std = ("PointsFor",  "std"),
-            season_margin_std     = ("Margin",      "std"),
+            season_margin         = ("Margin",        "mean"),
+            season_wins           = ("Win",            "sum"),
+            season_games_played   = ("TeamID",         "count"),
+            season_points_for_std = ("PointsFor",     "std"),
+            season_margin_std     = ("Margin",         "std"),
         )
         .reset_index()
     )
@@ -60,41 +85,64 @@ def build_team_features(
     season_stats["season_win_pct"] = (
         season_stats["season_wins"] / season_stats["season_games_played"]
     )
-
-    # Fill std NaN for single-game seasons
+    # Fill std NaN for single-game scenarios
     season_stats["season_points_for_std"] = season_stats["season_points_for_std"].fillna(12.0)
-    season_stats["season_margin_std"] = season_stats["season_margin_std"].fillna(12.0)
+    season_stats["season_margin_std"]     = season_stats["season_margin_std"].fillna(12.0)
+
+    # League averages (needed for Poisson shrinkage and multiplicative model)
+    league_avg_for     = float(season_df["PointsFor"].mean())
+    league_avg_against = float(season_df["PointsAgainst"].mean())
+    # Store for injection into matchup frame
+    season_stats["league_avg_score"] = league_avg_for
 
     # ── 2. Recent form (last 3 and last 5 games) ───────────────────────────
-    # Sort once, then use groupby.tail(w) — works in all pandas versions.
     season_sorted = season_df.sort_values(["TeamID", "DayNum"])
     for w in [3, 5]:
         last_w = season_sorted.groupby("TeamID", sort=False).tail(w)
         recent_form = (
             last_w.groupby("TeamID")
-            .agg(
-                **{
-                    f"recent{w}_points_for":     ("PointsFor",     "mean"),
-                    f"recent{w}_points_against": ("PointsAgainst", "mean"),
-                    f"recent{w}_margin":         ("Margin",        "mean"),
-                }
-            )
+            .agg(**{
+                f"recent{w}_points_for":     ("PointsFor",     "mean"),
+                f"recent{w}_points_against": ("PointsAgainst", "mean"),
+                f"recent{w}_margin":         ("Margin",        "mean"),
+            })
             .reset_index()
         )
         season_stats = season_stats.merge(recent_form, on="TeamID", how="left")
-        season_stats[f"recent{w}_points_for"] = season_stats[f"recent{w}_points_for"].fillna(
-            season_stats["season_points_for"]
+        # Fill with season averages when fewer than w games available
+        season_stats[f"recent{w}_points_for"] = (
+            season_stats[f"recent{w}_points_for"].fillna(season_stats["season_points_for"])
         )
-        season_stats[f"recent{w}_points_against"] = season_stats[f"recent{w}_points_against"].fillna(
-            season_stats["season_points_against"]
+        season_stats[f"recent{w}_points_against"] = (
+            season_stats[f"recent{w}_points_against"].fillna(season_stats["season_points_against"])
         )
-        season_stats[f"recent{w}_margin"] = season_stats[f"recent{w}_margin"].fillna(
-            season_stats["season_margin"]
+        season_stats[f"recent{w}_margin"] = (
+            season_stats[f"recent{w}_margin"].fillna(season_stats["season_margin"])
         )
 
-    # ── 3. Season trajectory: late-season improvement ─────────────────────
-    # Compare average margin of first 8 games vs last 8 games.
-    # Positive value → improving into the tournament.
+    # ── 3. EWMA margin (NEW v4) ────────────────────────────────────────────
+    # Exponentially weighted moving average with alpha=0.20 (half-life ≈ 3 games).
+    # Unlike fixed windows, EWMA naturally handles varying game counts.
+    ewma_alpha = 0.20
+    ewma_rows  = []
+    for team_id, grp in season_df.groupby("TeamID"):
+        g = grp.sort_values("DayNum")
+        margins = g["Margin"].values.astype(float)
+        if len(margins) == 0:
+            ewma_val = 0.0
+        elif len(margins) == 1:
+            ewma_val = float(margins[0])
+        else:
+            # Manual EWMA: older observations downweighted by (1-alpha)^k
+            ewma_val = float(margins[0])
+            for m in margins[1:]:
+                ewma_val = ewma_alpha * m + (1.0 - ewma_alpha) * ewma_val
+        ewma_rows.append({"TeamID": team_id, "ewma_margin": ewma_val})
+    ewma_df = pd.DataFrame(ewma_rows)
+    season_stats = season_stats.merge(ewma_df, on="TeamID", how="left")
+    season_stats["ewma_margin"] = season_stats["ewma_margin"].fillna(0.0)
+
+    # ── 4. Season trajectory: late vs early season improvement ─────────────
     n_traj = 8
     traj_rows = []
     for team_id, grp in season_df.groupby("TeamID"):
@@ -102,15 +150,15 @@ def build_team_features(
         if len(g) < n_traj:
             traj = 0.0
         else:
-            early = g.head(n_traj)["Margin"].mean()
-            late  = g.tail(n_traj)["Margin"].mean()
-            traj  = float(late - early)
+            early = float(g.head(n_traj)["Margin"].mean())
+            late  = float(g.tail(n_traj)["Margin"].mean())
+            traj  = late - early
         traj_rows.append({"TeamID": team_id, "season_trajectory": traj})
     traj_df = pd.DataFrame(traj_rows)
     season_stats = season_stats.merge(traj_df, on="TeamID", how="left")
     season_stats["season_trajectory"] = season_stats["season_trajectory"].fillna(0.0)
 
-    # ── 4. Blowout rate (won by >15) ───────────────────────────────────────
+    # ── 5. Blowout rate (won by >15) ───────────────────────────────────────
     season_df["_blowout"] = (season_df["Margin"] > 15).astype(float)
     blowout_df = (
         season_df.groupby("TeamID")["_blowout"]
@@ -122,7 +170,7 @@ def build_team_features(
     season_stats = season_stats.merge(blowout_df, on="TeamID", how="left")
     season_stats["blowout_pct"] = season_stats["blowout_pct"].fillna(0.0)
 
-    # ── 5. Close-game win rate (games decided by <5 pts) ──────────────────
+    # ── 6. Close-game win rate (decided by <5 pts) ─────────────────────────
     close_rows = []
     for team_id, grp in season_df.groupby("TeamID"):
         close = grp[grp["Margin"].abs() < 5]
@@ -132,38 +180,49 @@ def build_team_features(
     season_stats = season_stats.merge(close_df, on="TeamID", how="left")
     season_stats["close_game_win_pct"] = season_stats["close_game_win_pct"].fillna(0.5)
 
-    # ── 6. Strength of schedule proxy ─────────────────────────────────────
-    opp_strength = (
-        season_df.groupby("OppTeamID")
-        .agg(
-            opp_avg_margin = ("Margin", "mean"),
-            opp_win_rate   = ("Win",    "mean"),
-        )
-        .reset_index()
-        .rename(columns={"OppTeamID": "TeamID"})
+    # ── 7. Strength of Schedule (two-pass to avoid circularity) ───────────
+    # Pass 1: compute each team's overall quality proxy (margin + win_pct)
+    # Pass 2: SoS = average quality of opponents faced
+    # This avoids using the team's own SoS in computing their opponents' SoS.
+    basic_quality = (
+        season_stats[["TeamID", "season_margin", "season_win_pct"]]
+        .set_index("TeamID")
     )
-    sos = (
+    basic_quality["basic_q"] = (
+        0.6 * basic_quality["season_margin"].fillna(0.0)
+        + 20.0 * basic_quality["season_win_pct"].fillna(0.5)
+    )
+
+    sos_rows = []
+    for team_id, grp in season_df.groupby("TeamID"):
+        opp_ids = grp["OppTeamID"].values
+        opp_quality = basic_quality.loc[
+            basic_quality.index.isin(opp_ids), "basic_q"
+        ].mean()
+        sos_rows.append({
+            "TeamID":     team_id,
+            "sos_margin": float(opp_quality) if not np.isnan(opp_quality) else 0.0,
+        })
+    sos_df = pd.DataFrame(sos_rows)
+    # Also compute opponent win rate
+    opp_win_df = (
         season_df.merge(
-            opp_strength.rename(columns={
-                "TeamID":        "OppTeamID",
-                "opp_avg_margin": "opp_margin_proxy",
-                "opp_win_rate":   "opp_win_proxy",
-            }),
-            on="OppTeamID",
-            how="left",
+            season_stats[["TeamID", "season_win_pct"]].rename(
+                columns={"TeamID": "OppTeamID", "season_win_pct": "opp_win_rate"}
+            ),
+            on="OppTeamID", how="left",
         )
-        .groupby("TeamID")
-        .agg(
-            sos_margin   = ("opp_margin_proxy", "mean"),
-            sos_win_rate = ("opp_win_proxy",    "mean"),
-        )
+        .groupby("TeamID")["opp_win_rate"]
+        .mean()
         .reset_index()
+        .rename(columns={"opp_win_rate": "sos_win_rate"})
     )
-    season_stats = season_stats.merge(sos, on="TeamID", how="left")
+    season_stats = season_stats.merge(sos_df, on="TeamID", how="left")
+    season_stats = season_stats.merge(opp_win_df, on="TeamID", how="left")
     season_stats["sos_margin"]   = season_stats["sos_margin"].fillna(0.0)
     season_stats["sos_win_rate"] = season_stats["sos_win_rate"].fillna(0.5)
 
-    # ── 7. Quality win percentage ──────────────────────────────────────────
+    # ── 8. Quality win percentage ──────────────────────────────────────────
     # Win rate against teams with above-median season margin.
     median_margin = season_stats["season_margin"].median()
     quality_teams = set(
@@ -178,17 +237,20 @@ def build_team_features(
     season_stats = season_stats.merge(qwin_df, on="TeamID", how="left")
     season_stats["quality_win_pct"] = season_stats["quality_win_pct"].fillna(0.5)
 
-    # ── 8. Quality proxy and rank proxy ───────────────────────────────────
+    # ── 9. Quality proxy and rank proxy ────────────────────────────────────
+    # quality_proxy: composite strength signal (used for rank_proxy and SoS)
+    # Normalised by n_teams for cross-season comparability.
+    n_teams = max(len(season_stats), 1)
     season_stats["quality_proxy"] = (
         0.55 * season_stats["season_margin"].fillna(0.0)
         + 25.0 * season_stats["season_win_pct"].fillna(0.5)
         + 0.25 * season_stats["sos_margin"].fillna(0.0)
     )
-    season_stats["rank_proxy"] = season_stats["quality_proxy"].rank(
-        ascending=False, method="average"
+    season_stats["rank_proxy"] = (
+        season_stats["quality_proxy"].rank(ascending=False, method="average") / n_teams
     )
 
-    # ── 9. Elo (cross-season aware) ────────────────────────────────────────
+    # ── 10. Elo (cross-season aware) with momentum/volatility ──────────────
     base_games = (
         season_df[season_df["Win"] == 1][["Season", "DayNum", "TeamID", "OppTeamID", "Margin"]]
         .rename(columns={"TeamID": "WTeamID", "OppTeamID": "LTeamID"})
@@ -196,7 +258,6 @@ def build_team_features(
         .reset_index(drop=True)
     )
 
-    # Resolve per-team starting Elo from the precomputed cross-season dict
     season_init: dict = {}
     if starting_elo is not None:
         for team_id in season_stats["TeamID"]:
@@ -204,10 +265,10 @@ def build_team_features(
             if s_elo is not None:
                 season_init[team_id] = s_elo
 
-    use_margin = cfg.get("elo_use_margin", False)
-    margin_cap = cfg.get("elo_margin_cap", 30.0)
-    k_factor   = cfg.get("elo_k_factor", 25.0)
+    k_factor   = cfg.get("elo_k_factor", 20.0)
     init_elo   = cfg.get("elo_initial_rating", 1500.0)
+    use_margin = cfg.get("elo_use_margin", True)
+    margin_cap = cfg.get("elo_margin_cap", 15.0)
 
     elo_history, _ = calculate_elo_from_games(
         base_games,
@@ -217,37 +278,52 @@ def build_team_features(
         margin_cap=margin_cap,
         initial_ratings=season_init,
     )
+
     latest_elo = get_latest_elo(elo_history)
     season_stats = season_stats.merge(
-        latest_elo[["Season", "TeamID", "Elo"]], on=["Season", "TeamID"], how="left"
+        latest_elo[["Season", "TeamID", "Elo"]],
+        on=["Season", "TeamID"],
+        how="left",
     )
     season_stats["Elo"] = season_stats["Elo"].fillna(float(init_elo))
 
-    # ── 10. Poisson lambda windows ────────────────────────────────────────
-    poisson_shrinkage = cfg.get("poisson_shrinkage", 0.0)
-    alpha_ci_val      = alpha_ci
+    # Elo momentum + volatility (NEW v4)
+    elo_features = compute_elo_season_features(elo_history, n_delta=5)
+    if len(elo_features) > 0:
+        season_stats = season_stats.merge(
+            elo_features[["Season", "TeamID", "elo_delta", "elo_volatility"]],
+            on=["Season", "TeamID"],
+            how="left",
+        )
+    else:
+        season_stats["elo_delta"]     = 0.0
+        season_stats["elo_volatility"] = 0.0
+    season_stats["elo_delta"]      = season_stats["elo_delta"].fillna(0.0)
+    season_stats["elo_volatility"] = season_stats["elo_volatility"].fillna(0.0)
 
-    # Compute league-average lambdas for shrinkage
-    league_avg_for     = float(season_df["PointsFor"].mean())
-    league_avg_against = float(season_df["PointsAgainst"].mean())
+    # ── 11. Poisson lambda windows (adaptive shrinkage) ────────────────────
+    poisson_shrinkage_k = cfg.get("poisson_shrinkage_k", 8.0)
+    alpha_ci_val        = alpha_ci
 
     poisson_rows = []
     for team_id, grp in season_df.groupby("TeamID"):
         row = {"Season": season, "TeamID": team_id}
         for window in [3, 5, "season"]:
             stats = build_window_stats(
-                grp, window, alpha=alpha_ci_val,
-                shrinkage=poisson_shrinkage,
+                grp,
+                window,
+                alpha=alpha_ci_val,
+                shrinkage_k=poisson_shrinkage_k,
                 league_avg_for=league_avg_for,
                 league_avg_against=league_avg_against,
             )
             prefix = f"recent{window}" if window != "season" else "season"
-            row[f"{prefix}_lambda_for"]          = stats["lambda_for"]
-            row[f"{prefix}_lambda_for_ci_low"]   = stats["lambda_for_ci_low"]
-            row[f"{prefix}_lambda_for_ci_high"]  = stats["lambda_for_ci_high"]
-            row[f"{prefix}_lambda_against"]      = stats["lambda_against"]
-            row[f"{prefix}_lambda_against_ci_low"]  = stats["lambda_against_ci_low"]
-            row[f"{prefix}_lambda_against_ci_high"] = stats["lambda_against_ci_high"]
+            row[f"{prefix}_lambda_for"]              = stats["lambda_for"]
+            row[f"{prefix}_lambda_for_ci_low"]       = stats["lambda_for_ci_low"]
+            row[f"{prefix}_lambda_for_ci_high"]      = stats["lambda_for_ci_high"]
+            row[f"{prefix}_lambda_against"]          = stats["lambda_against"]
+            row[f"{prefix}_lambda_against_ci_low"]   = stats["lambda_against_ci_low"]
+            row[f"{prefix}_lambda_against_ci_high"]  = stats["lambda_against_ci_high"]
         poisson_rows.append(row)
 
     poisson_df = pd.DataFrame(poisson_rows)
@@ -289,50 +365,61 @@ def attach_team_features(
 
     # Team features (low / high)
     feature_cols = [c for c in all_features.columns if c not in ["Season", "TeamID"]]
-    low_map  = {"TeamID": "TeamIDLow"}
-    high_map = {"TeamID": "TeamIDHigh"}
-    low_map.update( {c: f"{c}_low"  for c in feature_cols})
-    high_map.update({c: f"{c}_high" for c in feature_cols})
+    low_map  = {"TeamID": "TeamIDLow",  **{c: f"{c}_low"  for c in feature_cols}}
+    high_map = {"TeamID": "TeamIDHigh", **{c: f"{c}_high" for c in feature_cols}}
 
     out = out.merge(all_features.rename(columns=low_map),  on=["Season", "TeamIDLow"],  how="left")
     out = out.merge(all_features.rename(columns=high_map), on=["Season", "TeamIDHigh"], how="left")
 
-    # Fallback numeric values
+    # Fallback numeric values for missing teams
     fallback_numeric = {
-        "season_points_for":     cfg["fallback_points_for"],
-        "season_points_against": cfg["fallback_points_against"],
-        "season_margin":         0.0,
-        "season_win_pct":        0.5,
-        "season_games_played":   0.0,
-        "recent3_points_for":    cfg["fallback_points_for"],
-        "recent3_points_against":cfg["fallback_points_against"],
-        "recent3_margin":        0.0,
-        "recent5_points_for":    cfg["fallback_points_for"],
-        "recent5_points_against":cfg["fallback_points_against"],
-        "recent5_margin":        0.0,
-        "Elo":                   cfg["fallback_elo"],
-        "sos_margin":            0.0,
-        "sos_win_rate":          0.5,
-        "quality_proxy":         0.0,
-        "rank_proxy":            0.0,
-        "season_points_for_std": 12.0,
-        "season_margin_std":     12.0,
-        "season_trajectory":     0.0,
-        "blowout_pct":           0.0,
-        "close_game_win_pct":    0.5,
-        "quality_win_pct":       0.5,
-        "recent3_lambda_for":    cfg["fallback_points_for"],
-        "recent3_lambda_against":cfg["fallback_points_against"],
-        "recent5_lambda_for":    cfg["fallback_points_for"],
-        "recent5_lambda_against":cfg["fallback_points_against"],
-        "season_lambda_for":     cfg["fallback_points_for"],
-        "season_lambda_against": cfg["fallback_points_against"],
+        "season_points_for":      cfg["fallback_points_for"],
+        "season_points_against":  cfg["fallback_points_against"],
+        "season_margin":          0.0,
+        "season_win_pct":         0.5,
+        "season_games_played":    0.0,
+        "recent3_points_for":     cfg["fallback_points_for"],
+        "recent3_points_against": cfg["fallback_points_against"],
+        "recent3_margin":         0.0,
+        "recent5_points_for":     cfg["fallback_points_for"],
+        "recent5_points_against": cfg["fallback_points_against"],
+        "recent5_margin":         0.0,
+        "ewma_margin":            0.0,
+        "Elo":                    cfg["fallback_elo"],
+        "elo_delta":              0.0,
+        "elo_volatility":         0.0,
+        "sos_margin":             0.0,
+        "sos_win_rate":           0.5,
+        "quality_proxy":          0.0,
+        "rank_proxy":             0.5,
+        "season_points_for_std":  12.0,
+        "season_margin_std":      12.0,
+        "season_trajectory":      0.0,
+        "blowout_pct":            0.0,
+        "close_game_win_pct":     0.5,
+        "quality_win_pct":        0.5,
+        "league_avg_score":       70.0,
+        "recent3_lambda_for":     cfg["fallback_points_for"],
+        "recent3_lambda_against": cfg["fallback_points_against"],
+        "recent5_lambda_for":     cfg["fallback_points_for"],
+        "recent5_lambda_against": cfg["fallback_points_against"],
+        "season_lambda_for":      cfg["fallback_points_for"],
+        "season_lambda_against":  cfg["fallback_points_against"],
     }
     for base_col, fill_val in fallback_numeric.items():
         for suffix in ("_low", "_high"):
             col = f"{base_col}{suffix}"
             if col in out.columns:
                 out[col] = out[col].fillna(fill_val)
+
+    # Inject league_avg_score as matchup-level scalar (average of both sides)
+    if "league_avg_score_low" in out.columns and "league_avg_score_high" in out.columns:
+        out["league_avg_score"] = (
+            out["league_avg_score_low"].fillna(70.0)
+            + out["league_avg_score_high"].fillna(70.0)
+        ) / 2.0
+    else:
+        out["league_avg_score"] = 70.0
 
     return out
 
@@ -345,14 +432,12 @@ def make_matchup_features(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataF
     """
     Create matchup-level difference features.
 
-    All differences are oriented as (Low − High) so that a positive value
-    means the Low-ID team has the advantage.  Model target is ActualLowWin=1.
+    All differences are oriented as (Low − High): positive value means
+    the Low-ID team has the advantage.  Model target is ActualLowWin=1.
 
-    Parameters
-    ----------
-    cfg : dict, optional
-        CONFIG dict.  Used for Poisson blend weights and max_points_poisson.
-        Falls back to CONFIG defaults if None.
+    v4 additions:
+        elo_delta_diff, elo_volatility_diff  (Elo momentum and stability)
+        ewma_margin_diff                     (EWMA recency-weighted margin)
     """
     from src.config import CONFIG as _CFG
     if cfg is None:
@@ -360,11 +445,15 @@ def make_matchup_features(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataF
 
     out = df.copy()
 
-    # Seed: positive → Low has better (lower) seed
+    # Seed: positive → Low has better (lower) seed number
     out["seed_diff"] = out["SeedHigh"] - out["SeedLow"]
 
-    # Elo: positive → Low has higher Elo
+    # Elo: positive → Low has higher Elo rating
     out["elo_diff"] = out["Elo_low"] - out["Elo_high"]
+
+    # NEW v4: Elo momentum and volatility
+    out["elo_delta_diff"]     = out["elo_delta_low"]     - out["elo_delta_high"]
+    out["elo_volatility_diff"] = out["elo_volatility_low"] - out["elo_volatility_high"]
 
     # Season stats
     out["season_points_for_diff"]     = out["season_points_for_low"]     - out["season_points_for_high"]
@@ -373,42 +462,46 @@ def make_matchup_features(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataF
     out["season_win_pct_diff"]        = out["season_win_pct_low"]        - out["season_win_pct_high"]
 
     # Recent 3
-    out["recent3_points_for_diff"]    = out["recent3_points_for_low"]    - out["recent3_points_for_high"]
-    out["recent3_points_against_diff"]= out["recent3_points_against_low"]- out["recent3_points_against_high"]
-    out["recent3_margin_diff"]        = out["recent3_margin_low"]        - out["recent3_margin_high"]
+    out["recent3_points_for_diff"]     = out["recent3_points_for_low"]     - out["recent3_points_for_high"]
+    out["recent3_points_against_diff"] = out["recent3_points_against_low"] - out["recent3_points_against_high"]
+    out["recent3_margin_diff"]         = out["recent3_margin_low"]         - out["recent3_margin_high"]
 
     # Recent 5
-    out["recent5_points_for_diff"]    = out["recent5_points_for_low"]    - out["recent5_points_for_high"]
-    out["recent5_points_against_diff"]= out["recent5_points_against_low"]- out["recent5_points_against_high"]
-    out["recent5_margin_diff"]        = out["recent5_margin_low"]        - out["recent5_margin_high"]
+    out["recent5_points_for_diff"]     = out["recent5_points_for_low"]     - out["recent5_points_for_high"]
+    out["recent5_points_against_diff"] = out["recent5_points_against_low"] - out["recent5_points_against_high"]
+    out["recent5_margin_diff"]         = out["recent5_margin_low"]         - out["recent5_margin_high"]
 
-    # Offense vs opponent defense
+    # NEW v4: EWMA margin difference
+    out["ewma_margin_diff"] = out["ewma_margin_low"] - out["ewma_margin_high"]
+
+    # Offense vs opponent defense (matchup interaction)
     out["offense_vs_defense_low"]  = out["season_points_for_low"]  - out["season_points_against_high"]
     out["offense_vs_defense_high"] = out["season_points_for_high"] - out["season_points_against_low"]
     out["matchup_diff"] = out["offense_vs_defense_low"] - out["offense_vs_defense_high"]
 
     # Strength signals
-    out["sos_diff"]         = out["sos_margin_low"]       - out["sos_margin_high"]
-    out["quality_diff"]     = out["quality_proxy_low"]    - out["quality_proxy_high"]
-    out["rank_diff_signed"] = out["rank_proxy_high"]      - out["rank_proxy_low"]  # high rank_proxy → worse
+    out["sos_diff"]         = out["sos_margin_low"]    - out["sos_margin_high"]
+    out["quality_diff"]     = out["quality_proxy_low"] - out["quality_proxy_high"]
+    # rank_proxy: lower value = better rank; high rank_proxy team has higher rank number = worse
+    out["rank_diff_signed"] = out["rank_proxy_high"]   - out["rank_proxy_low"]
 
-    # Consistency: high scoring variance in opponent → harder to predict → small edge
+    # Consistency: scoring variance difference
     out["consistency_edge"] = (
         out["season_points_for_std_high"] - out["season_points_for_std_low"]
     )
 
-    # ── v3 new features ────────────────────────────────────────────────────
+    # v3 features (preserved)
     out["season_trajectory_diff"]  = out["season_trajectory_low"]   - out["season_trajectory_high"]
     out["quality_win_pct_diff"]    = out["quality_win_pct_low"]      - out["quality_win_pct_high"]
     out["blowout_pct_diff"]        = out["blowout_pct_low"]          - out["blowout_pct_high"]
     out["close_game_win_pct_diff"] = out["close_game_win_pct_low"]   - out["close_game_win_pct_high"]
 
-    # ── Poisson matchup features ───────────────────────────────────────────
+    # Poisson matchup features (includes multiplicative lambda + new v4 features)
     poisson_cfg = {
         "poisson_blend_weights": cfg.get(
-            "poisson_blend_weights", {"recent3": 0.35, "recent5": 0.30, "season": 0.35}
+            "poisson_blend_weights", {"recent3": 0.40, "recent5": 0.35, "season": 0.25}
         ),
-        "max_points_poisson": cfg.get("max_points_poisson", 220),
+        "max_points_poisson": cfg.get("max_points_poisson", 155),
     }
     out = add_poisson_matchup_features(out, cfg=poisson_cfg)
 
