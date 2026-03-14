@@ -1,16 +1,20 @@
-# src/calibration.py — Probability calibration v4.0
+# src/calibration.py — Probability calibration v4.1
+#
+# Changes from v4.0:
+#   - IsotonicCalibrator: guarda n_min=50 adicionada.
+#     Isotonic com <50 amostras é propenso a overfit severo.
+#     Fallback automático para TemperatureCalibrator quando n < 50.
+#   - choose_best_calibrator_multifold(): nova função para seleção multi-fold.
+#     Problema v4.0: seleção com single-fold (apenas seasons[-1]) era frágil.
+#     Novo: leave-one-out sobre todos os folds OOF disponíveis, resultado médio.
+#     Mais robusto, especialmente quando n_seasons é pequeno.
+#   - temperature_candidates extendidos até 2.0 (era máx 1.50).
+#     Modelos esportivos podem ser significativamente overconfident.
 #
 # Changes from v3:
 #   - choose_best_calibrator: selection criterion changed from Brier → Log Loss.
-#     Rationale: log_loss is more sensitive to calibration quality, especially
-#     at extremes. A 90% prediction that is wrong hurts more than a 55% miss.
-#     Literature: Guo et al. (2017) show log_loss > Brier for detecting miscalibration.
 #   - TemperatureCalibrator: removed candidates < 1.0.
-#     Temperatures < 1.0 increase confidence (logit / 0.8 > logit), which is
-#     almost never appropriate for sports prediction where overconfidence is common.
-#   - temperature_candidates default now mirrors configs/default.yaml.
-#   - Added: reliability_plot_data() for visual calibration audit.
-#   - Added: calibration_audit_report() — one-call summary of all calibration metrics.
+#   - Added: reliability_plot_data(), calibration_audit_report().
 #
 # References:
 #   Platt (1999) "Probabilistic outputs for SVMs and comparisons"
@@ -59,10 +63,15 @@ class TemperatureCalibrator:
     T < 1.0 → NEVER used in v4 (would increase confidence, counterproductive).
 
     Selects optimal T from candidates via log loss minimisation on training set.
+
+    v4.1: default range extended to 2.0 (sports models can be overconfident).
     """
     def __init__(self, temperatures=None):
         # Default: all values ≥ 1.0 (never increase confidence)
-        self.temperatures    = temperatures or [1.00, 1.05, 1.08, 1.12, 1.15, 1.20, 1.25, 1.35, 1.50]
+        # Extended to 2.0 in v4.1: sports models can be significantly overconfident
+        self.temperatures    = temperatures or [
+            1.00, 1.05, 1.08, 1.12, 1.15, 1.20, 1.25, 1.35, 1.50, 1.70, 2.00
+        ]
         self.best_temperature = 1.0
 
     def fit(self, p, y):
@@ -118,17 +127,32 @@ class IsotonicCalibrator:
 
     Most flexible calibrator; risk of overfitting with small datasets.
     Use only when training set > ~500 samples.
+
+    v4.1: Added n_min guard. If fewer than n_min samples provided, falls back
+    to TemperatureCalibrator to avoid severe overfitting.
     """
+    N_MIN = 50  # minimum samples for safe isotonic fitting
+
     def __init__(self):
-        self.model = IsotonicRegression(out_of_bounds="clip")
+        self.model     = IsotonicRegression(out_of_bounds="clip")
+        self._fallback = None   # set to TemperatureCalibrator if n < N_MIN
 
     def fit(self, p, y):
         x = clip_probs(p)
         y = np.asarray(y).astype(int)
-        self.model.fit(x, y)
+        if len(x) < self.N_MIN:
+            # Too few samples: isotonic will memorise the training set.
+            # Fall back to temperature scaling which is more regularised.
+            self._fallback = TemperatureCalibrator()
+            self._fallback.fit(x, y)
+        else:
+            self._fallback = None
+            self.model.fit(x, y)
         return self
 
     def predict(self, p):
+        if self._fallback is not None:
+            return self._fallback.predict(p)
         return clip_probs(self.model.predict(clip_probs(p)))
 
 
@@ -221,6 +245,85 @@ def choose_best_calibrator(
 # ---------------------------------------------------------------------------
 # Calibration analysis utilities
 # ---------------------------------------------------------------------------
+
+def choose_best_calibrator_multifold(
+    oof_preds: list,
+    scorer_fn,
+    methods: Optional[List[str]] = None,
+    cfg=None,
+) -> "CalibrationResult":
+    """
+    Multi-fold leave-one-out calibrator selection from OOF predictions.
+
+    v4.1: Replaces single-fold selection (was: use seasons[-1] as validation).
+    New: for each fold i, train calibrator on all folds j≠i, evaluate on fold i.
+    Final metric is the mean log_loss across all leave-one-out folds.
+    More robust when n_seasons is small (5-10 typical).
+
+    Parameters
+    ----------
+    oof_preds : list of (p_pred_array, y_true_array) tuples
+        One entry per backtest season, ordered chronologically.
+        Minimum 3 tuples required (first 2 warm-up, rest evaluated).
+    scorer_fn : callable  (y_true, p_pred) → dict with 'log_loss' key.
+    methods : list of str, optional  Calibrator methods to evaluate.
+    cfg : dict, optional  CONFIG dict (for temperature candidates).
+
+    Returns
+    -------
+    CalibrationResult with the best method and its mean metrics.
+    """
+    if methods is None:
+        methods = ["identity", "temperature", "platt", "isotonic"]
+
+    if len(oof_preds) < 3:
+        # Not enough folds for LOO — fall back to last fold as val
+        p_train = np.concatenate([t[0] for t in oof_preds[:-1]])
+        y_train = np.concatenate([t[1] for t in oof_preds[:-1]])
+        p_val   = oof_preds[-1][0]
+        y_val   = oof_preds[-1][1]
+        return choose_best_calibrator(
+            p_train, y_train, p_val, y_val,
+            scorer_fn=scorer_fn, methods=methods, cfg=cfg,
+        )
+
+    # Leave-one-out: for each fold, train on all others, evaluate on it
+    method_scores: Dict[str, List[float]] = {m: [] for m in methods}
+
+    for i in range(1, len(oof_preds)):   # start at 1 (fold 0 has no history)
+        train_parts = [oof_preds[j] for j in range(i) if j != i]
+        if not train_parts:
+            continue
+        p_tr = np.concatenate([t[0] for t in train_parts])
+        y_tr = np.concatenate([t[1] for t in train_parts])
+        p_va = oof_preds[i][0]
+        y_va = oof_preds[i][1]
+
+        for method in methods:
+            try:
+                cal  = fit_calibrator(method, p_tr, y_tr, cfg=cfg)
+                p_c  = apply_calibrator(cal, p_va)
+                m    = scorer_fn(y_va, p_c)
+                method_scores[method].append(m.get("log_loss", 1.0))
+            except Exception:
+                method_scores[method].append(1.0)  # penalise failures
+
+    # Select method with lowest mean log_loss across LOO folds
+    best_method = min(
+        methods,
+        key=lambda m: float(np.mean(method_scores[m])) if method_scores[m] else 1.0,
+    )
+
+    # Fit final calibrator on ALL available OOF data
+    p_all = np.concatenate([t[0] for t in oof_preds])
+    y_all = np.concatenate([t[1] for t in oof_preds])
+    final_cal = fit_calibrator(best_method, p_all, y_all, cfg=cfg)
+
+    mean_scores = {
+        "log_loss": float(np.mean(method_scores[best_method])) if method_scores[best_method] else 1.0,
+    }
+    return CalibrationResult(method=best_method, fitted=final_cal, metrics=mean_scores)
+
 
 def calibration_table(y_true, p_pred, bins: int = 10) -> pd.DataFrame:
     """Binned calibration table: predicted vs empirical win rate."""

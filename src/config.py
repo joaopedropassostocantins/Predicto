@@ -117,7 +117,8 @@ def _build_config() -> dict:
 
         # ── Temperature scaling ─────────────────────────────────────────────
         # Only values >= 1.0 — never compress probabilities artificially
-        "temperature_candidates": [1.00, 1.05, 1.08, 1.12, 1.15, 1.20, 1.25, 1.35, 1.50],
+        # Extended to 2.0 in v4.1: sports models can be significantly overconfident
+        "temperature_candidates": [1.00, 1.05, 1.08, 1.12, 1.15, 1.20, 1.25, 1.35, 1.50, 1.70, 2.00],
         "manual_temperature": 1.12,
 
         # ── Calibration ─────────────────────────────────────────────────────
@@ -229,6 +230,12 @@ def _build_config() -> dict:
             "elo_delta_diff",
             "elo_volatility_diff",
             "ewma_margin_diff",
+            # NEW v4.1: Offensive/defensive efficiency proxy features
+            "off_eff_diff",        # Low scoring vs High defensive vulnerability
+            "def_eff_diff",        # Low defensive vulnerability vs High scoring
+            "net_eff_diff",        # Overall efficiency advantage
+            "recent_off_eff_diff", # Recent (last 5) offensive efficiency diff
+            "recent_def_eff_diff", # Recent (last 5) defensive efficiency diff
         ],
 
         # ── Massey Ordinals ──────────────────────────────────────────────────

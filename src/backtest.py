@@ -1,12 +1,18 @@
-# src/backtest.py — Rolling temporal backtest v4.0
+# src/backtest.py — Rolling temporal backtest v4.1
+#
+# Changes from v4.0:
+#   - Calibrator selection: single-fold → multi-fold leave-one-out (more robust).
+#     Old: used only seasons[i-1] as single validation fold.
+#     New: choose_best_calibrator_multifold() evaluates all available OOF folds,
+#          selects by mean log_loss across LOO iterations.
+#   - Calibration audit exported: before/after comparison in output dict.
+#   - _log cosmetic fix: season progress on single line.
 #
 # Changes from v3:
 #   - OOF predictions cached in a single O(n) pass instead of O(n²) recompute.
-#     Old: for each fold i, re-ran all j < i-1 folds inside the calibration loop.
-#     New: compute all OOF predictions once at the start; reuse in calibration selection.
 #   - Tourney data preloaded once outside the inner loop (was reloaded per season).
-#   - Calibrator selection: uses log_loss as primary criterion (mirrors calibration.py v4).
-#   - Added: blend_sensitivity analysis at end of backtest (when all OOF available).
+#   - Calibrator selection: uses log_loss as primary criterion.
+#   - Added: blend_sensitivity analysis at end of backtest.
 #   - Added: per_season_metrics export.
 #   - All data loading consolidated: no duplicate CSV reads in inner loops.
 
@@ -19,7 +25,13 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from src.calibration import apply_calibrator, choose_best_calibrator, calibration_table
+from src.calibration import (
+    apply_calibrator,
+    choose_best_calibrator,
+    choose_best_calibrator_multifold,
+    calibration_table,
+    calibration_audit_report,
+)
 from src.data import (
     load_regular_season_detailed,
     load_tourney_detailed,
@@ -207,19 +219,16 @@ def rolling_backtest(
         cal_method = "none"
 
         if calibrate and i >= 2:
-            # Build calibration training set from OOF predictions of seasons[0..i-2]
-            cal_train_df = pd.concat(
-                [oof_cache[seasons[j]] for j in range(i - 1)], ignore_index=True
-            )
-            # Validation set: OOF predictions for seasons[i-1]
-            cal_val_df = oof_cache[seasons[i - 1]]
-
+            # Multi-fold LOO calibrator selection using all OOF folds before season i.
+            # v4.1: replaced single-fold selection with leave-one-out for robustness.
+            oof_tuples = [
+                (oof_cache[seasons[j]]["Pred"].values,
+                 oof_cache[seasons[j]]["ActualLowWin"].values)
+                for j in range(i)
+            ]
             try:
-                best_cal = choose_best_calibrator(
-                    p_train=cal_train_df["Pred"].values,
-                    y_train=cal_train_df["ActualLowWin"].values,
-                    p_valid=cal_val_df["Pred"].values,
-                    y_valid=cal_val_df["ActualLowWin"].values,
+                best_cal = choose_best_calibrator_multifold(
+                    oof_preds=oof_tuples,
                     scorer_fn=lambda y, p: full_metric_bundle(y, p),
                     methods=calibrator_methods,
                     cfg=cfg,
@@ -272,6 +281,28 @@ def rolling_backtest(
         except Exception:
             pass
 
+    # Calibration audit: before/after comparison using raw vs calibrated predictions
+    cal_audit_table = pd.DataFrame()
+    if "PredRaw" in all_preds.columns and "Pred" in all_preds.columns:
+        try:
+            audit = calibration_audit_report(
+                all_preds["ActualLowWin"].values,
+                all_preds["PredRaw"].values,
+                all_preds["Pred"].values,
+                bins=10,
+            )
+            # Flatten scalar metrics into a summary row
+            audit_row = {k: v for k, v in audit.items() if not isinstance(v, pd.DataFrame)}
+            cal_audit_table = pd.DataFrame([audit_row])
+            _log(
+                f"\n=== Calibration Audit (Overall) ==="
+                f"\n  Raw  LogLoss={audit['raw_log_loss']:.4f}  Brier={audit['raw_brier']:.4f}  ECE={audit['raw_ece']:.4f}"
+                f"\n  Cal  LogLoss={audit['cal_log_loss']:.4f}  Brier={audit['cal_brier']:.4f}  ECE={audit['cal_ece']:.4f}"
+                f"\n  Δ    LogLoss={audit['delta_log_loss']:+.4f}  Brier={audit['delta_brier']:+.4f}  ECE={audit['delta_ece']:+.4f}"
+            )
+        except Exception as e:
+            _log(f"  WARNING: Calibration audit failed: {e}")
+
     _log("\n=== Backtest Summary ===")
     _log(summary[["Season", "Games", "log_loss", "brier", "ece", "accuracy", "Calibrator"]]
          .to_string(index=False))
@@ -283,6 +314,7 @@ def rolling_backtest(
         "probability_bands": band_report,
         "seasonal_metrics":  seasonal_metrics,
         "blend_sensitivity": blend_sens if blend_sens is not None else pd.DataFrame(),
+        "calibration_audit": cal_audit_table,
     }
 
 

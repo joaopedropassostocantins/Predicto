@@ -34,6 +34,12 @@ try:
 except Exception:
     HAS_XGB = False
 
+try:
+    import shap as _shap
+    HAS_SHAP = True
+except Exception:
+    HAS_SHAP = False
+
 from src.utils import clip_probs, sigmoid, normalize_blend
 from src.config import CONFIG
 
@@ -135,6 +141,51 @@ def get_feature_importance(model, cfg: dict) -> dict:
                          if hasattr(model, "feature_names_in_")
                          and c in model.feature_names_in_]
             return dict(zip(available or feature_cols, imp))
+        return {}
+
+
+def get_shap_importance(model, df: pd.DataFrame, cfg: dict, n_samples: int = 500) -> dict:
+    """
+    Compute SHAP-based feature importance (mean absolute SHAP value).
+
+    More reliable than fscore for identifying true feature contributions.
+    Requires `pip install shap`.
+
+    Parameters
+    ----------
+    model   : Trained XGBoost or HistGBT model.
+    df      : Feature DataFrame (same columns used in training).
+    cfg     : CONFIG dict with feature_cols.
+    n_samples : Max samples to use for SHAP computation (speed/memory tradeoff).
+
+    Returns
+    -------
+    dict {feature_name: mean_abs_shap} sorted by importance descending.
+    Empty dict if shap not installed or model not compatible.
+    """
+    if not HAS_SHAP:
+        return {}
+
+    feature_cols = cfg["feature_cols"]
+    available    = [c for c in feature_cols if c in df.columns]
+    X = df[available].fillna(0.0)
+
+    # Sample for speed
+    if len(X) > n_samples:
+        X = X.sample(n_samples, random_state=42)
+
+    try:
+        if HAS_XGB and isinstance(model, XGBClassifier):
+            explainer  = _shap.TreeExplainer(model)
+            shap_vals  = explainer.shap_values(X)
+        else:
+            explainer  = _shap.TreeExplainer(model)
+            shap_vals  = explainer.shap_values(X)
+
+        mean_abs = np.abs(shap_vals).mean(axis=0)
+        importance = dict(zip(available, mean_abs.tolist()))
+        return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
+    except Exception:
         return {}
 
 

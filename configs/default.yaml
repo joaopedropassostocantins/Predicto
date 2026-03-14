@@ -82,7 +82,7 @@ elo_margin_cap: 15.0       # reduced from 30 → NCAA basketball practical cap
 # A temperature T > 1 divides the logit by T, pulling probs toward 0.5.
 # NEVER use T < 1: would increase confidence in already overconfident model.
 # Reference: Guo et al. (2017), "On Calibration of Modern Neural Networks"
-temperature_candidates: [1.00, 1.05, 1.08, 1.12, 1.15, 1.20, 1.25, 1.35, 1.50]
+temperature_candidates: [1.00, 1.05, 1.08, 1.12, 1.15, 1.20, 1.25, 1.35, 1.50, 1.70, 2.00]
 manual_temperature: 1.12   # default; applied when auto-selection chooses T-scaling
 
 # ─── Calibration ──────────────────────────────────────────────────────────────
@@ -215,6 +215,12 @@ feature_cols:
   - elo_volatility_diff             # Elo std over season (consistency of level)
   # NEW v4: EWMA-based recency weighting (alpha=0.20 → half-life ≈ 3 games)
   - ewma_margin_diff                # EWMA of point margin
+  # NEW v4.1: Offensive/defensive efficiency proxy
+  - off_eff_diff                    # Low scoring vs High defensive vulnerability
+  - def_eff_diff                    # Low defensive vs High offensive
+  - net_eff_diff                    # Net efficiency advantage
+  - recent_off_eff_diff             # Recent (last 5) offensive efficiency
+  - recent_def_eff_diff             # Recent (last 5) defensive efficiency
 
 # ─── Massey Ordinals ──────────────────────────────────────────────────────────
 massey_system_priority: ["POM", "SAG", "MOR", "DOL", "WOL", "RTH", "COL"]
