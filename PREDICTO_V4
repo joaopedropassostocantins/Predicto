@@ -1,1 +1,760 @@
-{"metadata":{"kernelspec":{"language":"python","display_name":"Python 3","name":"python3"},"language_info":{"name":"python","version":"3.12.12","mimetype":"text/x-python","codemirror_mode":{"name":"ipython","version":3},"pygments_lexer":"ipython3","nbconvert_exporter":"python","file_extension":".py"},"kaggle":{"accelerator":"none","dataSources":[{"sourceType":"competition","sourceId":130469,"databundleVersionId":15952337},{"sourceType":"datasetVersion","sourceId":15179502,"datasetId":9707752,"databundleVersionId":16072424}],"dockerImageVersionId":31286,"isInternetEnabled":false,"language":"python","sourceType":"notebook","isGpuEnabled":false}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"code","source":"import pandas as pd, os\n\n# Ver se Stage 2 existe\nprint(os.listdir(\"/kaggle/working/data\"))","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2026-03-14T12:10:47.329474Z","iopub.execute_input":"2026-03-14T12:10:47.329832Z","iopub.status.idle":"2026-03-14T12:10:47.602431Z","shell.execute_reply.started":"2026-03-14T12:10:47.329805Z","shell.execute_reply":"2026-03-14T12:10:47.601439Z"}},"outputs":[{"traceback":["\u001b[0;31m---------------------------------------------------------------------------\u001b[0m","\u001b[0;31mFileNotFoundError\u001b[0m                         Traceback (most recent call last)","\u001b[0;32m/tmp/ipykernel_55/4223312351.py\u001b[0m in \u001b[0;36m<cell line: 0>\u001b[0;34m()\u001b[0m\n\u001b[1;32m      2\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      3\u001b[0m \u001b[0;31m# Ver se Stage 2 existe\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m----> 4\u001b[0;31m \u001b[0mprint\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mos\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlistdir\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m\"/kaggle/working/data\"\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m","\u001b[0;31mFileNotFoundError\u001b[0m: [Errno 2] No such file or directory: '/kaggle/working/data'"],"ename":"FileNotFoundError","evalue":"[Errno 2] No such file or directory: '/kaggle/working/data'","output_type":"error"}],"execution_count":3}]}
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "c10e539d",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2026-03-14T14:08:48.450162Z",
+     "iopub.status.busy": "2026-03-14T14:08:48.449459Z",
+     "iopub.status.idle": "2026-03-14T14:08:53.344699Z",
+     "shell.execute_reply": "2026-03-14T14:08:53.343589Z"
+    },
+    "papermill": {
+     "duration": 4.902233,
+     "end_time": "2026-03-14T14:08:53.346741",
+     "exception": false,
+     "start_time": "2026-03-14T14:08:48.444508",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "OK — dependências\n"
+     ]
+    }
+   ],
+   "source": [
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "# CÉLULA 1 — dependências\n",
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "import subprocess, sys\n",
+    "subprocess.run([sys.executable, \"-m\", \"pip\", \"install\", \"-q\",\n",
+    "                \"numpy\", \"pandas\", \"scipy\", \"scikit-learn\", \"xgboost\"], check=True)\n",
+    "print(\"OK — dependências\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "9e8da57f",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2026-03-14T14:08:53.353776Z",
+     "iopub.status.busy": "2026-03-14T14:08:53.352913Z",
+     "iopub.status.idle": "2026-03-14T14:08:55.692499Z",
+     "shell.execute_reply": "2026-03-14T14:08:55.691365Z"
+    },
+    "papermill": {
+     "duration": 2.345088,
+     "end_time": "2026-03-14T14:08:55.694536",
+     "exception": false,
+     "start_time": "2026-03-14T14:08:53.349448",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "src: ['data.py', 'evaluate.py', 'metrics.py', 'rankings.py', 'model.py', 'poisson.py', 'tuning.py', 'config.py', 'utils.py', 'features.py', 'models.py', '__init__.py', 'submit.py', 'ratings.py', 'calibration.py', 'backtest.py']\n",
+      "dados: 36 arquivos\n"
+     ]
+    }
+   ],
+   "source": [
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "# CÉLULA 2 — extrair código e preparar dados\n",
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "import os, sys, shutil\n",
+    "\n",
+    "WORK_DIR    = \"/kaggle/input/datasets/joaopedrotocantins/predict\"\n",
+    "DATA_SRC    = \"/kaggle/input/competitions/march-machine-learning-mania-2026\"\n",
+    "DATA_DIR    = \"/kaggle/working/data\"\n",
+    "SRC_DATASET = \"/kaggle/input/megapredicto\"\n",
+    "\n",
+    "if not os.path.exists(WORK_DIR):\n",
+    "    shutil.copytree(SRC_DATASET, WORK_DIR)\n",
+    "\n",
+    "sys.path.insert(0, WORK_DIR)\n",
+    "os.chdir(WORK_DIR)\n",
+    "\n",
+    "os.makedirs(DATA_DIR, exist_ok=True)\n",
+    "for f in os.listdir(DATA_SRC):\n",
+    "    dst = os.path.join(DATA_DIR, f)\n",
+    "    if not os.path.exists(dst):\n",
+    "        shutil.copy(os.path.join(DATA_SRC, f), dst)\n",
+    "\n",
+    "shutil.copy(f\"{DATA_DIR}/SampleSubmissionStage2.csv\",\n",
+    "            f\"{DATA_DIR}/sample_submission.csv\")\n",
+    "\n",
+    "print(\"src:\", os.listdir(os.path.join(WORK_DIR, \"src\")))\n",
+    "print(\"dados:\", len(os.listdir(DATA_DIR)), \"arquivos\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "id": "b0e17bf0",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2026-03-14T14:08:55.701919Z",
+     "iopub.status.busy": "2026-03-14T14:08:55.700749Z",
+     "iopub.status.idle": "2026-03-14T14:08:57.099395Z",
+     "shell.execute_reply": "2026-03-14T14:08:57.098371Z"
+    },
+    "papermill": {
+     "duration": 1.404292,
+     "end_time": "2026-03-14T14:08:57.101377",
+     "exception": false,
+     "start_time": "2026-03-14T14:08:55.697085",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "target_season : 2026\n",
+      "Stage2 rows   : 132133\n",
+      "blend_weights : {'xgb': 0.42, 'poisson': 0.32, 'elo': 0.2, 'manual': 0.06, 'seed': 0.0}\n",
+      "elo_initial   : 1500.0\n"
+     ]
+    }
+   ],
+   "source": [
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "# CÉLULA 3 — config v5\n",
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "import pandas as pd\n",
+    "from src.config import CONFIG\n",
+    "\n",
+    "CONFIG[\"data_dir\"] = DATA_DIR\n",
+    "\n",
+    "# ── Elo ────────────────────────────────────────────────────────\n",
+    "CONFIG[\"elo_k_factor\"]       = 18.0\n",
+    "CONFIG[\"elo_carry_factor\"]   = 0.82\n",
+    "CONFIG[\"elo_margin_cap\"]     = 15.0\n",
+    "CONFIG[\"elo_use_margin\"]     = True\n",
+    "CONFIG[\"elo_initial_rating\"] = 1500.0   # CRÍTICO — era 100\n",
+    "\n",
+    "# ── Poisson ────────────────────────────────────────────────────\n",
+    "CONFIG[\"max_points_poisson\"]   = 155\n",
+    "CONFIG[\"alpha_ci\"]              = 0.12\n",
+    "CONFIG[\"poisson_shrinkage\"]     = 0.20\n",
+    "CONFIG[\"poisson_blend_weights\"] = {\n",
+    "    \"recent3\": 0.50,   # peso alto na forma recente\n",
+    "    \"recent5\": 0.30,\n",
+    "    \"season\":  0.20,\n",
+    "}\n",
+    "\n",
+    "# ── Clipping ───────────────────────────────────────────────────\n",
+    "CONFIG[\"pred_clip_min\"] = 0.05\n",
+    "CONFIG[\"pred_clip_max\"] = 0.95\n",
+    "CONFIG[\"temperature_candidates\"] = [0.90, 1.00, 1.05, 1.10, 1.12, 1.15, 1.20, 1.25]\n",
+    "\n",
+    "# ── XGBoost ────────────────────────────────────────────────────\n",
+    "CONFIG[\"xgb_params\"].update({\n",
+    "    \"n_estimators\":     800,\n",
+    "    \"learning_rate\":    0.03,\n",
+    "    \"max_depth\":        3,\n",
+    "    \"subsample\":        0.80,\n",
+    "    \"colsample_bytree\": 0.70,\n",
+    "    \"min_child_weight\": 6,\n",
+    "    \"reg_lambda\":       6.0,\n",
+    "    \"reg_alpha\":        0.5,\n",
+    "    \"gamma\":            0.2,\n",
+    "})\n",
+    "\n",
+    "# ── Blend — Poisson + XGBoost dominantes, manual mínimo ───────\n",
+    "CONFIG[\"blend_weights\"] = {\n",
+    "    \"xgb\":     0.42,\n",
+    "    \"poisson\": 0.32,\n",
+    "    \"elo\":     0.20,\n",
+    "    \"manual\":  0.06,\n",
+    "    \"seed\":    0.00,\n",
+    "}\n",
+    "\n",
+    "# ── Manual — peso mínimo, só forma recente e Poisson ──────────\n",
+    "CONFIG[\"manual_feature_weights\"] = {\n",
+    "    \"seed_diff\":                 0.10,\n",
+    "    \"elo_diff\":                  0.20,\n",
+    "    \"season_margin_diff\":        0.15,\n",
+    "    \"season_win_pct_diff\":       0.10,\n",
+    "    \"recent3_margin_diff\":       0.40,   # forma recente — sinal mais forte\n",
+    "    \"recent5_margin_diff\":       0.30,\n",
+    "    \"matchup_diff\":              0.20,\n",
+    "    \"poisson_win_prob_centered\": 0.50,   # Poisson — sinal mais forte\n",
+    "    \"quality_diff\":              0.15,\n",
+    "    \"sos_diff\":                  0.10,\n",
+    "    \"rank_diff_signed\":          0.10,\n",
+    "    \"consistency_edge\":          0.05,\n",
+    "}\n",
+    "\n",
+    "# ── Features XGBoost — todas as disponíveis ───────────────────\n",
+    "CONFIG[\"feature_cols\"] = [\n",
+    "    \"seed_diff\",\n",
+    "    \"elo_diff\",\n",
+    "    \"season_points_for_diff\",\n",
+    "    \"season_points_against_diff\",\n",
+    "    \"season_margin_diff\",\n",
+    "    \"season_win_pct_diff\",\n",
+    "    \"recent3_points_for_diff\",\n",
+    "    \"recent3_points_against_diff\",\n",
+    "    \"recent3_margin_diff\",\n",
+    "    \"recent5_points_for_diff\",\n",
+    "    \"recent5_points_against_diff\",\n",
+    "    \"recent5_margin_diff\",\n",
+    "    \"matchup_diff\",\n",
+    "    \"offense_vs_defense_low\",\n",
+    "    \"offense_vs_defense_high\",\n",
+    "    \"sos_diff\",\n",
+    "    \"quality_diff\",\n",
+    "    \"rank_diff_signed\",\n",
+    "    \"poisson_lambda_low\",\n",
+    "    \"poisson_lambda_high\",\n",
+    "    \"poisson_expected_margin\",\n",
+    "    \"poisson_win_prob\",\n",
+    "    \"poisson_win_prob_centered\",\n",
+    "    \"consistency_edge\",\n",
+    "    \"season_trajectory_diff\",\n",
+    "    \"quality_win_pct_diff\",\n",
+    "    \"blowout_pct_diff\",\n",
+    "    \"close_game_win_pct_diff\",\n",
+    "]\n",
+    "\n",
+    "# ── Target season ─────────────────────────────────────────────\n",
+    "sub_stage2 = pd.read_csv(f\"{DATA_DIR}/SampleSubmissionStage2.csv\")\n",
+    "CONFIG[\"target_season\"] = int(\n",
+    "    sub_stage2[\"ID\"].str.split(\"_\").str[0].mode()[0]\n",
+    ")\n",
+    "print(\"target_season :\", CONFIG[\"target_season\"])\n",
+    "print(\"Stage2 rows   :\", len(sub_stage2))\n",
+    "print(\"blend_weights :\", CONFIG[\"blend_weights\"])\n",
+    "print(\"elo_initial   :\", CONFIG[\"elo_initial_rating\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "id": "8618daa7",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2026-03-14T14:08:57.108218Z",
+     "iopub.status.busy": "2026-03-14T14:08:57.107739Z",
+     "iopub.status.idle": "2026-03-14T14:09:15.668420Z",
+     "shell.execute_reply": "2026-03-14T14:09:15.667313Z"
+    },
+    "papermill": {
+     "duration": 18.566366,
+     "end_time": "2026-03-14T14:09:15.670274",
+     "exception": false,
+     "start_time": "2026-03-14T14:08:57.103908",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Loading data...\n",
+      "Pre-computing cross-season Elo...\n",
+      "Building feature frames...\n",
+      "  Season 2023...\n",
+      " 134 games\n",
+      "  Season 2024...\n",
+      " 134 games\n",
+      "  Season 2025...\n",
+      " 134 games\n",
+      "Computing OOF predictions (single forward pass)...\n",
+      "Rolling evaluation with calibration...\n",
+      "  Season 2023: LogLoss=0.6179  Brier=0.2143  ECE=0.0662  Acc=0.679  Cal=none\n",
+      "  Season 2024: LogLoss=0.5734  Brier=0.1935  ECE=0.0901  Acc=0.716  Cal=none\n",
+      "  Season 2025: LogLoss=0.4714  Brier=0.1535  ECE=0.1103  Acc=0.821  Cal=isotonic\n",
+      "\n",
+      "=== Backtest Summary ===\n",
+      " Season  Games  log_loss    brier      ece  accuracy Calibrator\n",
+      "   2023    134  0.617897 0.214273 0.066204  0.679104       none\n",
+      "   2024    134  0.573393 0.193509 0.090144  0.716418       none\n",
+      "   2025    134  0.471391 0.153508 0.110307  0.820896   isotonic\n",
+      "\n",
+      "── BACKTEST SUMMARY v4 ──\n",
+      " Season    brier  accuracy  log_loss Calibrator\n",
+      "   2023 0.214273  0.679104  0.617897       none\n",
+      "   2024 0.193509  0.716418  0.573393       none\n",
+      "   2025 0.153508  0.820896  0.471391   isotonic\n",
+      "\n",
+      "Mean Brier  : 0.1871\n",
+      "Mean Acc    : 0.7388\n",
+      "Mean LogLoss: 0.5542\n"
+     ]
+    }
+   ],
+   "source": [
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "# CÉLULA 4 — backtest v4 (3 folds)\n",
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "from src.backtest import rolling_backtest\n",
+    "\n",
+    "results = rolling_backtest(\n",
+    "    seasons=[2023, 2024, 2025],\n",
+    "    cfg=CONFIG,\n",
+    "    genders=(\"M\", \"W\"),\n",
+    "    calibrate=True,\n",
+    ")\n",
+    "\n",
+    "summary = results[\"summary\"]\n",
+    "print(\"\\n── BACKTEST SUMMARY v4 ──\")\n",
+    "print(summary[[\"Season\",\"brier\",\"accuracy\",\"log_loss\",\"Calibrator\"]].to_string(index=False))\n",
+    "print(f\"\\nMean Brier  : {summary['brier'].mean():.4f}\")\n",
+    "print(f\"Mean Acc    : {summary['accuracy'].mean():.4f}\")\n",
+    "print(f\"Mean LogLoss: {summary['log_loss'].mean():.4f}\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "4fc74fde",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2026-03-14T14:09:15.677308Z",
+     "iopub.status.busy": "2026-03-14T14:09:15.676987Z",
+     "iopub.status.idle": "2026-03-14T14:11:28.765956Z",
+     "shell.execute_reply": "2026-03-14T14:11:28.764942Z"
+    },
+    "papermill": {
+     "duration": 133.094668,
+     "end_time": "2026-03-14T14:11:28.767781",
+     "exception": false,
+     "start_time": "2026-03-14T14:09:15.673113",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "=== Generating submission for season 2026 ===\n",
+      "Loading data...\n",
+      "Pre-computing cross-season Elo...\n",
+      "Building historical feature frames (with labels)...\n",
+      "  Season 2015... 130 games\n",
+      "  Season 2016... 130 games\n",
+      "  Season 2017... 130 games\n",
+      "  Season 2018... 130 games\n",
+      "  Season 2019... 130 games\n",
+      "  Season 2021... 129 games\n",
+      "  Season 2022... 134 games\n",
+      "  Season 2023... 134 games\n",
+      "  Season 2024... 134 games\n",
+      "  Season 2025... 134 games\n",
+      "Computing OOF predictions for calibrator selection...\n",
+      "Selecting calibrator...\n",
+      "Best calibrator: platt  (val LogLoss=0.4446  Brier=0.1397)\n",
+      "Training final model on all backtest seasons...\n",
+      "Building features for target season 2026...\n",
+      "\n",
+      "Submission saved: /kaggle/working/submission.csv  (132133 rows)\n",
+      "Pred range: [0.0336, 0.9838]  mean=0.5017\n",
+      "\n",
+      "── SUBMISSION FINAL v4 ──\n",
+      "Rows : 132133\n",
+      "NaN  : 0\n",
+      "Min  : 0.0336\n",
+      "Max  : 0.9838\n",
+      "Mean : 0.5017\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>ID</th>\n",
+       "      <th>Pred</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>2026_1101_1102</td>\n",
+       "      <td>0.792733</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>2026_1101_1103</td>\n",
+       "      <td>0.133033</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>2026_1101_1104</td>\n",
+       "      <td>0.128383</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>2026_1101_1105</td>\n",
+       "      <td>0.713770</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>2026_1101_1106</td>\n",
+       "      <td>0.693726</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>5</th>\n",
+       "      <td>2026_1101_1107</td>\n",
+       "      <td>0.570885</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>6</th>\n",
+       "      <td>2026_1101_1108</td>\n",
+       "      <td>0.692306</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>7</th>\n",
+       "      <td>2026_1101_1110</td>\n",
+       "      <td>0.385799</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>8</th>\n",
+       "      <td>2026_1101_1111</td>\n",
+       "      <td>0.226881</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>9</th>\n",
+       "      <td>2026_1101_1112</td>\n",
+       "      <td>0.099193</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "               ID      Pred\n",
+       "0  2026_1101_1102  0.792733\n",
+       "1  2026_1101_1103  0.133033\n",
+       "2  2026_1101_1104  0.128383\n",
+       "3  2026_1101_1105  0.713770\n",
+       "4  2026_1101_1106  0.693726\n",
+       "5  2026_1101_1107  0.570885\n",
+       "6  2026_1101_1108  0.692306\n",
+       "7  2026_1101_1110  0.385799\n",
+       "8  2026_1101_1111  0.226881\n",
+       "9  2026_1101_1112  0.099193"
+      ]
+     },
+     "execution_count": 5,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "# CÉLULA 5 — submission v4\n",
+    "# ═══════════════════════════════════════════════════════════════\n",
+    "import src.submit as _submit\n",
+    "from src.data import parse_submission_ids\n",
+    "from src.submit import generate_submission\n",
+    "\n",
+    "sub_all = parse_submission_ids(sub_stage2)\n",
+    "\n",
+    "def _gen_matchups_patch(season, m_seeds, w_seeds):\n",
+    "    df = sub_all[sub_all[\"Season\"] == season].copy()\n",
+    "    df[\"LowHome\"]      = 0\n",
+    "    df[\"HighHome\"]     = 0\n",
+    "    df[\"ActualLowWin\"] = 0\n",
+    "    return df\n",
+    "\n",
+    "_submit._generate_all_matchups = _gen_matchups_patch\n",
+    "\n",
+    "sub = generate_submission(CONFIG, output_path=\"/kaggle/working/submission.csv\")\n",
+    "\n",
+    "# Garantir exatamente as linhas do Stage2\n",
+    "sub_gerado = pd.read_csv(\"/kaggle/working/submission.csv\")\n",
+    "sub_final  = sub_stage2[[\"ID\"]].merge(sub_gerado, on=\"ID\", how=\"left\")\n",
+    "sub_final[\"Pred\"] = sub_final[\"Pred\"].fillna(sub_gerado[\"Pred\"].mean())\n",
+    "\n",
+    "print(\"\\n── SUBMISSION FINAL v4 ──\")\n",
+    "print(\"Rows :\", len(sub_final))\n",
+    "print(\"NaN  :\", sub_final[\"Pred\"].isna().sum())\n",
+    "print(\"Min  :\", round(sub_final[\"Pred\"].min(), 4))\n",
+    "print(\"Max  :\", round(sub_final[\"Pred\"].max(), 4))\n",
+    "print(\"Mean :\", round(sub_final[\"Pred\"].mean(), 4))\n",
+    "\n",
+    "sub_final.to_csv(\"/kaggle/working/submission.csv\", index=False)\n",
+    "sub_final.head(10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "id": "c62cdefe",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2026-03-14T14:11:28.776526Z",
+     "iopub.status.busy": "2026-03-14T14:11:28.776148Z",
+     "iopub.status.idle": "2026-03-14T14:11:29.027328Z",
+     "shell.execute_reply": "2026-03-14T14:11:29.026516Z"
+    },
+    "papermill": {
+     "duration": 0.258269,
+     "end_time": "2026-03-14T14:11:29.029646",
+     "exception": false,
+     "start_time": "2026-03-14T14:11:28.771377",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Submission shape: (132133, 2)\n",
+      "Stage2 shape    : (132133, 2)\n",
+      "\n",
+      "Sub colunas  : ['ID', 'Pred']\n",
+      "Stage2 colunas: ['ID', 'Pred']\n",
+      "\n",
+      "Sub IDs exemplo:\n",
+      "['2026_1101_1102', '2026_1101_1103', '2026_1101_1104', '2026_1101_1105', '2026_1101_1106']\n",
+      "\n",
+      "Stage2 IDs exemplo:\n",
+      "['2026_1101_1102', '2026_1101_1103', '2026_1101_1104', '2026_1101_1105', '2026_1101_1106']\n",
+      "\n",
+      "IDs que batem: 132133 de 132133\n",
+      "IDs faltando no submission: 0\n"
+     ]
+    }
+   ],
+   "source": [
+    "import pandas as pd\n",
+    "\n",
+    "sub = pd.read_csv(\"/kaggle/working/submission.csv\")\n",
+    "sample = pd.read_csv(\"/kaggle/working/data/SampleSubmissionStage2.csv\")\n",
+    "\n",
+    "print(\"Submission shape:\", sub.shape)\n",
+    "print(\"Stage2 shape    :\", sample.shape)\n",
+    "print(\"\\nSub colunas  :\", sub.columns.tolist())\n",
+    "print(\"Stage2 colunas:\", sample.columns.tolist())\n",
+    "\n",
+    "print(\"\\nSub IDs exemplo:\")\n",
+    "print(sub[\"ID\"].head(5).tolist())\n",
+    "print(\"\\nStage2 IDs exemplo:\")\n",
+    "print(sample[\"ID\"].head(5).tolist())\n",
+    "\n",
+    "# Verificar IDs que batem\n",
+    "match = sub[\"ID\"].isin(sample[\"ID\"]).sum()\n",
+    "print(f\"\\nIDs que batem: {match} de {len(sample)}\")\n",
+    "\n",
+    "# Verificar se há IDs do Stage2 faltando\n",
+    "missing = ~sample[\"ID\"].isin(sub[\"ID\"])\n",
+    "print(f\"IDs faltando no submission: {missing.sum()}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "id": "a30554f4",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2026-03-14T14:11:29.039187Z",
+     "iopub.status.busy": "2026-03-14T14:11:29.038306Z",
+     "iopub.status.idle": "2026-03-14T14:11:29.059096Z",
+     "shell.execute_reply": "2026-03-14T14:11:29.058291Z"
+    },
+    "papermill": {
+     "duration": 0.027585,
+     "end_time": "2026-03-14T14:11:29.061047",
+     "exception": false,
+     "start_time": "2026-03-14T14:11:29.033462",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "NaN  : 0\n",
+      "Min  : 0.0336\n",
+      "Max  : 0.9838\n",
+      "Mean : 0.5017\n",
+      "\n",
+      "Distribuição:\n",
+      "Pred\n",
+      "(0.0, 0.1]     3439\n",
+      "(0.1, 0.2]    20901\n",
+      "(0.2, 0.3]    17497\n",
+      "(0.3, 0.4]    12497\n",
+      "(0.4, 0.5]    12067\n",
+      "(0.5, 0.6]    12769\n",
+      "(0.6, 0.7]    13663\n",
+      "(0.7, 0.8]    13888\n",
+      "(0.8, 0.9]    16093\n",
+      "(0.9, 1.0]     9319\n",
+      "Name: count, dtype: int64\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(\"NaN  :\", sub[\"Pred\"].isna().sum())\n",
+    "print(\"Min  :\", round(sub[\"Pred\"].min(), 4))\n",
+    "print(\"Max  :\", round(sub[\"Pred\"].max(), 4))\n",
+    "print(\"Mean :\", round(sub[\"Pred\"].mean(), 4))\n",
+    "print(\"\\nDistribuição:\")\n",
+    "print(pd.cut(sub[\"Pred\"], bins=[0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]).value_counts().sort_index())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "id": "96e8b6d8",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2026-03-14T14:11:29.069852Z",
+     "iopub.status.busy": "2026-03-14T14:11:29.069578Z",
+     "iopub.status.idle": "2026-03-14T14:11:29.269396Z",
+     "shell.execute_reply": "2026-03-14T14:11:29.268176Z"
+    },
+    "papermill": {
+     "duration": 0.20618,
+     "end_time": "2026-03-14T14:11:29.271199",
+     "exception": false,
+     "start_time": "2026-03-14T14:11:29.065019",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Sub shape   : (132133, 2)\n",
+      "Stage2 shape: (132133, 2)\n",
+      "Sub cols    : ['ID', 'Pred']\n",
+      "IDs batem   : 132133\n",
+      "Sub exemplo : ['2026_1101_1102', '2026_1101_1103', '2026_1101_1104']\n",
+      "Stage2 ex   : ['2026_1101_1102', '2026_1101_1103', '2026_1101_1104']\n"
+     ]
+    }
+   ],
+   "source": [
+    "import pandas as pd\n",
+    "\n",
+    "sub = pd.read_csv(\"/kaggle/working/submission.csv\")\n",
+    "sample = pd.read_csv(\"/kaggle/working/data/SampleSubmissionStage2.csv\")\n",
+    "\n",
+    "print(\"Sub shape   :\", sub.shape)\n",
+    "print(\"Stage2 shape:\", sample.shape)\n",
+    "print(\"Sub cols    :\", sub.columns.tolist())\n",
+    "print(\"IDs batem   :\", sub[\"ID\"].isin(sample[\"ID\"]).sum())\n",
+    "print(\"Sub exemplo :\", sub[\"ID\"].head(3).tolist())\n",
+    "print(\"Stage2 ex   :\", sample[\"ID\"].head(3).tolist())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "e15c74c2",
+   "metadata": {
+    "papermill": {
+     "duration": 0.003465,
+     "end_time": "2026-03-14T14:11:29.278366",
+     "exception": false,
+     "start_time": "2026-03-14T14:11:29.274901",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kaggle": {
+   "accelerator": "none",
+   "dataSources": [
+    {
+     "databundleVersionId": 15952337,
+     "isSourceIdPinned": false,
+     "sourceId": 130469,
+     "sourceType": "competition"
+    },
+    {
+     "databundleVersionId": 16075271,
+     "datasetId": 9707752,
+     "sourceId": 15182223,
+     "sourceType": "datasetVersion"
+    }
+   ],
+   "dockerImageVersionId": 31286,
+   "isGpuEnabled": false,
+   "isInternetEnabled": false,
+   "language": "python",
+   "sourceType": "notebook"
+  },
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.12.12"
+  },
+  "papermill": {
+   "default_parameters": {},
+   "duration": 164.75658,
+   "end_time": "2026-03-14T14:11:30.004393",
+   "environment_variables": {},
+   "exception": null,
+   "input_path": "__notebook__.ipynb",
+   "output_path": "__notebook__.ipynb",
+   "parameters": {},
+   "start_time": "2026-03-14T14:08:45.247813",
+   "version": "2.6.0"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
