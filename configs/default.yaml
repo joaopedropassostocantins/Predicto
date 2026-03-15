@@ -146,6 +146,15 @@ blend_weights:
 # Organised by predictive value and leakage risk.
 # Rules: no signal already dominant in Elo/XGB; total weight stays low in ensemble.
 # All weights normalised at runtime — only relative magnitudes matter.
+# Manual model control flags (v4.2)
+# manual_model_enabled: set to false to completely ablate the manual component
+#   (returns 0.5 for all rows; blend weight effectively becomes 0)
+# manual_contribution_cap: limits output to [0.5 - cap, 0.5 + cap]
+#   e.g. 0.45 → output stays in [0.05, 0.95]
+#   null = no cap (default, full range allowed)
+manual_model_enabled: true
+manual_contribution_cap: null     # or e.g. 0.45 for conservative capping
+
 manual_feature_weights:
   # Priority HIGH: structural efficiency signals (most predictive for tournament)
   matchup_diff: 1.20              # offense vs opponent defense (interaction term)

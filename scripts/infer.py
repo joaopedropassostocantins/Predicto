@@ -35,9 +35,7 @@ from src.data import (
 )
 from src.features import build_team_features, attach_team_features, make_matchup_features
 from src.models import compute_all_probabilities, get_feature_importance
-from src.calibration import apply_calibrator, fit_calibrator
 from src.ratings import precompute_starting_elo
-from src.submit import generate_submission, validate_submission
 
 
 def parse_args():
@@ -137,15 +135,19 @@ def main():
     # For full ensemble, run train.py which trains XGBoost on all backtest seasons.
     pred_df = compute_all_probabilities(pred_df, cfg, train_df=None)
 
-    # ── Apply calibrator ───────────────────────────────────────────────────
-    dummy_p = pred_df["Pred"].values
-    dummy_y = (pred_df["Pred"].values > 0.5).astype(int)  # pseudo labels
-    cal = fit_calibrator(args.use_calibrator, dummy_p, dummy_y, cfg=cfg)
-    pred_df["PredCalibrated"] = apply_calibrator(cal, pred_df["Pred"].values)
+    # ── Calibration note ──────────────────────────────────────────────────
+    # Calibration in infer.py is intentionally skipped.
+    # Reason: calibration requires ground-truth labels, which are not available
+    # for future matchups. Fitting on pseudo-labels (pred > 0.5) is semantically
+    # incorrect and provides no statistical benefit.
+    # For fully calibrated predictions, use:
+    #   python scripts/make_submission.py --data-dir DIR --output submission.csv
+    # That pipeline trains and selects calibrators using historical OOF predictions.
+    pred_df["PredRaw"] = pred_df["Pred"].values
 
     # ── Output ────────────────────────────────────────────────────────────
     out_cols = ["ID", "Season", "TeamIDLow", "TeamIDHigh",
-                "p_elo", "p_poisson", "p_xgb", "p_manual", "Pred", "PredCalibrated"]
+                "p_elo", "p_poisson", "p_xgb", "p_manual", "Pred", "PredRaw"]
     out_cols = [c for c in out_cols if c in pred_df.columns]
     output   = pred_df[out_cols].copy()
     output.to_csv(args.output, index=False)

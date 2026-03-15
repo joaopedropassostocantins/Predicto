@@ -291,7 +291,9 @@ def choose_best_calibrator_multifold(
     method_scores: Dict[str, List[float]] = {m: [] for m in methods}
 
     for i in range(1, len(oof_preds)):   # start at 1 (fold 0 has no history)
-        train_parts = [oof_preds[j] for j in range(i) if j != i]
+        # Train on all folds strictly before fold i (temporal ordering preserved).
+        # Note: j is in range(i) so j < i always — no future data leaks.
+        train_parts = [oof_preds[j] for j in range(i)]
         if not train_parts:
             continue
         p_tr = np.concatenate([t[0] for t in train_parts])

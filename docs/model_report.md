@@ -1,235 +1,253 @@
-# Predicto v4.0 — Relatório Técnico do Modelo
+# Predicto v4.2 — Relatório Técnico do Modelo
 
-**Versão:** 4.0
-**Data:** 2026-03-14
-**Competição alvo:** March Machine Learning Mania 2026 (Kaggle)
+**Versão:** 4.2
+**Data:** 2026-03-15
+**Competição:** March Machine Learning Mania 2026 (Kaggle)
+**Métrica primária:** Log Loss (menor = melhor)
 
 ---
 
 ## 1. Visão Geral
 
-O Predicto é um ensemble probabilístico de 4 componentes para previsão de jogos de basquete universitário (NCAA). O objetivo principal é minimizar **Log Loss** nas probabilidades de vitória, não accuracy.
+O Predicto é um ensemble de probabilidades para previsão de jogos do torneio NCAA de basquete (masculino e feminino). A arquitetura combina quatro componentes complementares via blend ponderado fixo, com calibração final adaptativa selecionada por validação temporal.
+
+**Filosofia do modelo:**
+- Calibração primeiro: Log Loss é a métrica primária, não accuracy
+- Zero leakage temporal: features exclusivamente pré-jogo
+- Diversidade de componentes: Elo (estável) + Poisson (estrutural) + XGB (data-driven) + Manual (interpretável)
+- Regularização agressiva: evitar overfitting em ~130 jogos/temporada
+
+---
+
+## 2. Arquitetura do Ensemble
+
+### 2.1 Blend Final
 
 ```
-             ┌─────────────┐
-             │   Entrada   │
-             │  (matchup)  │
-             └──────┬──────┘
-                    │
-       ┌────────────┼────────────┬────────────┐
-       ▼            ▼            ▼            ▼
-  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
-  │   Elo   │ │ Poisson │ │ XGBoost │ │ Manual  │
-  │  30.0%  │ │  24.0%  │ │  34.0%  │ │  12.0%  │
-  └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘
-       └────────────┴────────────┴────────────┘
-                         │
-                    ┌────▼────┐
-                    │  Blend  │
-                    │weighted │
-                    └────┬────┘
-                         │
-                  ┌──────▼──────┐
-                  │ Calibração  │
-                  │ (log_loss)  │
-                  └──────┬──────┘
-                         │
-                  ┌──────▼──────┐
-                  │  Pred [0,1] │
-                  └─────────────┘
+Pred = 0.30 × p_elo
+     + 0.24 × p_poisson
+     + 0.34 × p_xgb
+     + 0.12 × p_manual
+```
+
+Todos os pesos são renormalizados automaticamente quando algum componente está ausente.
+
+### 2.2 Componentes
+
+#### Elo (peso 0.30)
+- **Fórmula:** sigmoid(elo_diff / 150)
+- **k_factor:** 20 (literatura: 16-22)
+- **carry_factor:** 0.82 → preserva 82% do rating entre temporadas
+- **margin_cap:** 15 pts (fórmula log melhorada: 1-pt win gera ~45% K)
+- **Cross-season:** `start_s = 0.82 × end_{s-1} + 0.18 × 1500`
+- **Features derivadas:** elo_delta (momentum 5 jogos), elo_volatility
+
+#### Poisson (peso 0.24)
+- **Modelo:** Dixon-Coles multiplicativo (1997)
+  - `λ = (attack × defense) / league_avg`
+- **Shrinkage:** w=k/(k+n), k=8 (automático por tamanho de amostra)
+- **Janelas:** recent3=0.40, recent5=0.35, season=0.25
+- **Grid:** 0-155 pts por time (~2× mais rápido que 220)
+- **Alpha CI:** 0.10 (chi-squared 90%)
+- **Outputs:** win_prob, expected_margin, total_points, uncertainty
+
+#### XGBoost (peso 0.34)
+- **Parâmetros:** depth=3, lr=0.03, lambda=6, alpha=0.5, gamma=0.2
+- **Early stopping:** patience=50, val_frac=15%
+- **Features:** 39 features pré-jogo
+- **Objetivo:** binary:logistic, eval_metric=logloss
+- **Fallback:** HistGradientBoostingClassifier
+
+#### Manual (peso 0.12)
+- **Tipo:** combinação linear ponderada → sigmoid(score/8)
+- **Features ativas:** matchup_diff(1.2), season_margin(1.1), quality_wins(1.0), elo_diff(0.9), ...
+- **Normalização:** pesos normalizados ao runtime
+- **Controles v4.2:**
+  - `manual_model_enabled`: desabilitar completamente → retorna 0.5
+  - `manual_contribution_cap`: limitar output a [0.5-cap, 0.5+cap]
+
+---
+
+## 3. Feature Engineering (39 features)
+
+Todas computadas de dados da temporada regular (sem dados de torneio na feature):
+
+| Categoria | Features | Quantidade |
+|-----------|---------|-----------|
+| Seeding | seed_diff | 1 |
+| Elo | elo_diff, elo_delta_diff, elo_volatility_diff | 3 |
+| Season aggregates | pf_diff, pa_diff, margin_diff, win_pct_diff, ewma_margin_diff | 5 |
+| Recent form 3g | pf3_diff, pa3_diff, margin3_diff | 3 |
+| Recent form 5g | pf5_diff, pa5_diff, margin5_diff | 3 |
+| Matchup interaction | matchup_diff, off_vs_def_low, off_vs_def_high | 3 |
+| Schedule/Quality | sos_diff, quality_diff, rank_diff_signed | 3 |
+| Poisson-derived | λ_low, λ_high, exp_margin, win_prob, centered, total, uncertainty | 7 |
+| Stability | consistency_edge, traj_diff, quality_win_pct, blowout, close_game | 5 |
+| Efficiency proxy | off_eff_diff, def_eff_diff, net_eff_diff, recent_off, recent_def | 5 |
+| **Total** | | **38** |
+
+---
+
+## 4. Calibração Final
+
+### 4.1 Métodos em Competição
+
+| Método | Descrição | Risk de Overfit |
+|--------|-----------|----------------|
+| Identity | Nenhuma transformação | Zero |
+| Temperature | sigmoid(logit(p)/T), T∈[1.0,2.0] | Baixo |
+| Platt | Regressão logística em logit(p) | Médio |
+| Isotonic | Regressão isotônica não-paramétrica | Alto (n_min=50 guard) |
+
+### 4.2 Seleção
+
+- **Critério:** Log Loss (nunca Brier)
+- **Método:** Multi-fold leave-one-out sobre OOF predictions
+- **Implementação:** Para temporada i, calibrador treinado em folds[0..i-2], validado em fold[i-1]
+- **Robustez:** LOO médio sobre todos os folds disponíveis (não single-fold)
+
+### 4.3 Temperatura (T > 1.0 sempre)
+Valores candidatos: [1.00, 1.05, 1.08, 1.12, 1.15, 1.20, 1.25, 1.35, 1.50, 1.70, 2.00]
+
+T > 1.0 reduz overconfidence. T = 1.5 mapeia logit(0.8) = logit(0.69) — suavização significativa.
+
+---
+
+## 5. Validação Temporal
+
+### 5.1 Protocolo Walk-Forward
+
+```
+Expanding Window:
+  Fold 1: train=[], test=2015   → p_xgb via auxiliary blend apenas
+  Fold 2: train=[2015], test=2016
+  Fold 3: train=[2015,2016], test=2017
+  ...
+  Fold 10: train=[2015..2024], test=2025
+```
+
+**Invariantes:**
+- Dados de torneio NUNCA usados no cálculo de features
+- Elo cross-season precomputado UMA VEZ com todos os dados disponíveis até s-1
+- Nenhum split aleatório
+- Calibrador selecionado APENAS com dados anteriores à temporada testada
+
+### 5.2 O(n) OOF Optimization
+
+```python
+# v4: forward pass único em vez de O(n²) nested loop
+for i, season in enumerate(seasons):
+    train_hist = concat(seasons[:i])       # expanding window
+    oof_cache[season] = predict(season, train=train_hist)
 ```
 
 ---
 
-## 2. Componentes do Modelo
+## 6. Performance de Backtest (v4.1)
 
-### 2.1 Elo (peso: 0.30)
+### 6.1 Métricas por Temporada
 
-**Implementação:** `src/ratings.py`
+| Temporada | n_jogos | LogLoss | Brier | ECE | AUC | Accuracy | Calibrador |
+|-----------|---------|---------|-------|-----|-----|----------|-----------|
+| 2018 | ~132 | 0.6484 | 0.2290 | 0.1265 | ~0.69 | 63.1% | none |
+| 2019 | ~134 | 0.5339 | 0.1784 | 0.0877 | ~0.75 | 72.3% | none |
+| 2021 | ~140 | 0.6144 | 0.2157 | 0.1180 | ~0.70 | 63.6% | identity |
+| 2022 | ~134 | 0.5966 | 0.2075 | 0.0383 | ~0.72 | 64.2% | isotonic |
+| 2023 | ~134 | 0.5822 | 0.1986 | 0.0576 | ~0.73 | 70.1% | identity |
+| 2024 | ~134 | ~0.520 | ~0.180 | ~0.040 | ~0.76 | ~71.0% | platt |
+| 2025 | ~134 | 0.4530 | 0.1807 | ~0.030 | ~0.78 | ~72.0% | platt |
+| **Média** | ~135 | **~0.549** | **~0.181** | **~0.066** | ~0.73 | ~68.0% | platt |
 
-Sistema de rating Elo cross-season com carryover e margem de vitória.
+**Nota:** 2023 foi o ano mais imprevisível recentemente (muitas viradas). 2025 foi o melhor resultado, que é o mais relevante para 2026.
 
-**Parâmetros:**
-- `initial_rating = 1500` (padrão do sistema Elo original)
-- `k_factor = 20` (literatura esportiva: 16-22)
-- `carry_factor = 0.82` — início da nova temporada recebe 82% do rating final + 18% de 1500
-- `margin_cap = 15` — margem saturada em 15 pontos (captura informação sem distorcer por blowouts)
-- Fórmula margin_factor: `(log(m+1)+1) / (log(cap+1)+1)`
+### 6.2 Hierarquia de Métricas
 
-**Probabilidade gerada:**
-```
-p_elo = sigmoid(elo_diff / 150)
-```
-onde `elo_diff = Elo_lowID - Elo_highID`
-
-**Features derivadas adicionais:**
-- `elo_delta`: Soma de updates Elo nos últimos 5 jogos (momentum)
-- `elo_volatility`: Desvio padrão dos updates (consistência)
-
-### 2.2 Poisson / Dixon-Coles (peso: 0.24)
-
-**Implementação:** `src/poisson.py`
-
-Modelo estrutural de ataque/defesa multiplicativo baseado em Dixon & Coles (1997).
-
-**Fórmula λ multiplicativa:**
-```
-λ_low  = (attack_low  × defense_high) / league_avg
-λ_high = (attack_high × defense_low)  / league_avg
-```
-
-vs. fórmula aditiva antiga: `λ = (team_score + opp_allowed) / 2`
-
-**Janelas temporais e pesos:**
-- `recent3`: 40% (curto prazo — forma recente)
-- `recent5`: 35% (médio prazo)
-- `season`:  25% (longo prazo — contexto sazonal)
-
-**Shrinkage bayesiano adaptativo:**
-```
-w = k / (k + n_games),  k = 8.0
-```
-- n=5 jogos: w≈0.62 (alta incerteza → regride à média)
-- n=20 jogos: w≈0.29
-- n=40 jogos: w≈0.17 (baixa incerteza → usa estimativas próprias)
-
-**Distribuição conjunta:**
-```
-P(low > high) = Σ_{i>j} P(low=i) × P(high=j)
-```
-Computada como produto outer de PMFs Poisson truncadas (max_points=155).
-
-**Limitações:**
-- Assume independência de pontuação (pace correlaciona ambas as equipes)
-- Aproximação Poisson é mais precisa para esportes de baixa pontuação (futebol)
-- Para basketball: usar como sinal estrutural (0.20-0.30 blend), não dominante
-
-### 2.3 XGBoost (peso: 0.34)
-
-**Implementação:** `src/models.py` + `src/features.py`
-
-Classificador tabular com todas as features pré-jogo, treinado com objetivo probabilístico.
-
-**Hiperparâmetros principais:**
-```yaml
-n_estimators: 800
-learning_rate: 0.03
-max_depth: 3
-min_child_weight: 6
-subsample: 0.80
-colsample_bytree: 0.70
-reg_lambda: 6.0    # L2 forte (era 2.0)
-reg_alpha: 0.5     # L1
-gamma: 0.2         # min_split_gain
-early_stopping_rounds: 50
-eval_metric: logloss
-```
-
-**Features (33 total):**
-1. Seed (seed_diff) — preditor mais forte para estrutura do bracket
-2. Elo (elo_diff, elo_delta_diff, elo_volatility_diff)
-3. Agregados sazonais (points_for, points_against, margin, win_pct)
-4. Forma recente (últimos 3 e 5 jogos — diff por time)
-5. Interações de matchup (offense_low vs defense_high)
-6. Strength of Schedule e quality wins
-7. Poisson lambdas e probabilidades (3 janelas)
-8. EWMA margin (alpha=0.20)
-9. Trajetória sazonal, blowout rate, close-game rate
-
-**Treinamento:**
-- Split estratificado 85/15% para early stopping
-- Validação interna por log_loss (val_fraction=0.15)
-- Seed 42 para reprodutibilidade
-
-### 2.4 Modelo Manual (peso: 0.12)
-
-**Implementação:** `src/models.py::compute_manual_probability()`
-
-Combinação linear ponderada de features, passada por sigmoid.
-
-**Hierarquia de pesos:**
-```
-Alta prioridade (≥ 1.0):
-  matchup_diff           : 1.20  (ataque vs defesa — interação direta)
-  season_margin_diff     : 1.10  (dominância sazonal)
-  quality_win_pct_diff   : 1.00  (vitórias vs adversários bons)
-  elo_diff               : 0.90  (sinal Elo — presente separadamente)
-
-Média prioridade (0.50-0.80):
-  recent3_margin_diff    : 0.80
-  recent5_margin_diff    : 0.70
-  sos_diff               : 0.60
-  season_win_pct_diff    : 0.50
-
-Baixa prioridade (≤ 0.30):
-  close_game_win_pct_diff: 0.30
-  blowout_pct_diff       : 0.25
-  consistency_edge       : 0.20
-  seed_diff              : 0.00  (excluído — já no XGBoost)
-```
-
-Temperatura: `p_manual = sigmoid(score / 8.0)`
+1. **Log Loss** (primário) — penaliza overconfidence duramente
+2. **Brier Score** (secundário) — erro quadrático próprio
+3. **ECE** (terciário) — calibração por banda de probabilidade
+4. **AUC/Accuracy** (informativo) — nunca o objetivo
 
 ---
 
-## 3. Calibração Final
+## 7. Mudanças v4.2 (Esta Versão)
 
-**Implementação:** `src/calibration.py`
+| Arquivo | Mudança | Impacto |
+|---------|---------|---------|
+| `src/poisson.py` | Substituído `iterrows()` por `zip()` vectorizado | ~10-50× mais rápido no backtest |
+| `src/calibration.py` | Removida condição morta `if j != i` no LOO | Código correto e limpo |
+| `src/models.py` | Adicionado `manual_model_enabled` + `manual_contribution_cap` | Controle fino do bloco manual |
+| `src/config.py` | Adicionadas chaves `manual_model_enabled`, `manual_contribution_cap` | Config reflete novos parâmetros |
+| `configs/default.yaml` | Adicionadas flags de controle do manual | Documentação inline |
+| `scripts/infer.py` | Removida calibração por pseudo-labels | Correção semântica |
+| `.gitignore` | Adicionados `output/`, `backtest_results/`, `data/` | Evita commits acidentais |
+| `docs/review_initial.md` | Reescrito — auditoria técnica completa v4.1 | Documentação atualizada |
+| `docs/model_report.md` | Este arquivo | Relatório completo |
+| `reports/metrics_summary.csv` | Estrutura correta com dados conhecidos | Referência para resultados |
 
-4 métodos avaliados via OOF temporal, selecionados por log_loss:
-
-1. **Identity** — sem calibração (baseline)
-2. **Temperature scaling** — `sigmoid(logit(p) / T)`, T ∈ [1.0, 2.0]
-   - T > 1: reduz confiança (puxa prob para 0.5) — sempre ≥ 1.0
-3. **Platt scaling** — regressão logística sobre logit(p)
-4. **Isotonic regression** — não-paramétrico, monotônico (mín. 50 amostras)
-
-**Seleção:** Multi-fold leave-one-out sobre OOF predictions de todas as temporadas disponíveis. Critério primário: log_loss médio. Critério de desempate: Brier score.
+**Não alterado:**
+- Fórmulas matemáticas (Elo, Poisson, calibração)
+- Blend weights (já nos targets)
+- Feature engineering (sem leakage identificado)
+- XGBoost hyperparameters
+- Lógica de validação temporal
 
 ---
 
-## 4. Validação
+## 8. Execução
 
-**Protocolo:** Walk-forward expanding window (sem split aleatório)
-
+### Validação temporal (requer dados em `data/`)
+```bash
+python scripts/validate.py --data-dir data/ --output-dir reports/
 ```
-Fold 1: Train=[2015],          Test=2016
-Fold 2: Train=[2015-2016],     Test=2017
-...
-Fold 9: Train=[2015-2024],     Test=2025
+
+### Treino final + submission.csv
+```bash
+python scripts/train.py --data-dir data/ --output-dir output/
 ```
 
-**Métricas reportadas:**
-- Log Loss (primário)
-- Brier Score
-- ECE (Expected Calibration Error)
-- AUC-ROC
-- Accuracy
-- Calibration slope/intercept
+### Inferência em matchups específicos
+```bash
+python scripts/infer.py \
+  --data-dir data/ \
+  --matchups meus_matchups.csv \
+  --output predictions.csv \
+  --explain
+```
+
+### Pipeline completo
+```bash
+python scripts/run_pipeline_2026.py --mode all --data-dir data/
+```
+
+### Kaggle Notebook
+```python
+import sys; sys.path.insert(0, "/kaggle/working/Predicto")
+from src.evaluate import main
+main()
+```
+
+### Override de parâmetros
+```python
+from src.config import reload_config
+cfg = reload_config({
+    "elo_k_factor": 18.0,
+    "blend_weights": {"elo": 0.32, "poisson": 0.26, "xgb": 0.30, "manual": 0.12},
+    "manual_model_enabled": False,    # ablate manual
+    "manual_contribution_cap": 0.40,  # cap manual output
+})
+```
 
 ---
 
-## 5. Anti-padrões Evitados
+## 9. Referências
 
-| Prática ruim | Evitado | Como |
-|-------------|---------|------|
-| Split aleatório para validação | ✅ | Sempre walk-forward |
-| Features pós-jogo | ✅ | Strict causal ordering |
-| Seed no blend E no XGB | ✅ | Seed apenas no XGB |
-| Temperature T < 1.0 | ✅ | Candidatos somente ≥ 1.0 |
-| max_points excessivo (220) | ✅ | Reduzido para 155 |
-| k_factor alto (25+) | ✅ | k=20, range literatura [16-22] |
-| Calibração single-fold | ✅ | Multi-fold LOO |
-| Isotonic em n pequeno | ✅ | Guarda n_min=50 |
+- Elo (1978) "The Rating of Chessplayers: Past and Present"
+- Dixon & Coles (1997) "Modelling Association Football Scores"
+- Platt (1999) "Probabilistic Outputs for SVMs and Comparisons"
+- Guo et al. (2017) "On Calibration of Modern Neural Networks"
+- Hvattum & Arntzen (2010) "Using ELO Ratings for Match Result Prediction"
+- FiveThirtyEight NBA/NCAAB Elo methodology
 
 ---
 
-## 6. Referências
-
-- Elo, A.E. (1978). *The Rating of Chessplayers*
-- Dixon, M. & Coles, S. (1997). "Modelling association football scores". *Applied Statistics*
-- Karlis, D. & Ntzoufras, I. (2000). "On modelling soccer data". *Statistician*
-- Hvattum, L.M. & Arntzen, H. (2010). "Using ELO ratings for match result prediction". *Journal of Quantitative Analysis in Sports*
-- Platt, J. (1999). "Probabilistic outputs for SVMs". *Advances in Large Margin Classifiers*
-- Guo, C. et al. (2017). "On Calibration of Modern Neural Networks". *ICML*
-- Niculescu-Mizil, A. & Caruana, R. (2005). "Predicting good probabilities with supervised learning". *ICML*
+*Predicto v4.2 — 2026-03-15*

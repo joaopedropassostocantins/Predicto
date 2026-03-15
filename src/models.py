@@ -216,11 +216,25 @@ def compute_manual_probability(df: pd.DataFrame, cfg: dict) -> np.ndarray:
       - seed_diff weight is 0.0 (see config): prevents double-counting.
       - Only features present in `df` are used (missing features silently skipped).
 
+    v4.2 additions:
+      - manual_model_enabled (bool, default True): if False, returns 0.5 for all rows.
+        Useful to ablate the manual component without changing blend weights.
+      - manual_contribution_cap (float, default None): if set, clips output to
+        [0.5 - cap, 0.5 + cap] before returning. Prevents extreme manual predictions
+        from dominating the blend even at the 12% weight level.
+        Example: cap=0.45 → manual output stays in [0.05, 0.95].
+
     Parameters
     ----------
     cfg["manual_feature_weights"] : dict of {feature_name: weight}
     cfg["manual_model_temperature"] : float, sigmoid temperature (default 8.0)
+    cfg["manual_model_enabled"] : bool (default True)
+    cfg["manual_contribution_cap"] : float or None (default None)
     """
+    # Check if manual model is enabled; return neutral 0.5 if disabled.
+    if not cfg.get("manual_model_enabled", True):
+        return np.full(len(df), 0.5, dtype=float)
+
     raw_weights = cfg.get("manual_feature_weights", {})
 
     # Normalise weights (excludes zeros to avoid diluting active signals)
@@ -233,6 +247,14 @@ def compute_manual_probability(df: pd.DataFrame, cfg: dict) -> np.ndarray:
 
     temperature = cfg.get("manual_model_temperature", 8.0)
     p = sigmoid(score / temperature)
+
+    # Optional contribution cap: clip manual output to [0.5 - cap, 0.5 + cap].
+    # This limits how extreme the manual component can be, preventing any single
+    # heuristic from dominating even with the 12% blend weight.
+    cap = cfg.get("manual_contribution_cap", None)
+    if cap is not None and cap > 0:
+        p = np.clip(p, 0.5 - float(cap), 0.5 + float(cap))
+
     return clip_probs(p, cfg["pred_clip_min"], cfg["pred_clip_max"])
 
 

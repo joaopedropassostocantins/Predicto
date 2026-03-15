@@ -194,6 +194,9 @@ def _build_config() -> dict:
             "seed_diff":                 0.00,
         },
         "manual_model_temperature": 8.0,   # sigmoid temperature for manual model
+        "manual_model_enabled": True,       # set False to ablate manual component (returns 0.5)
+        "manual_contribution_cap": None,    # optional: clip manual output to [0.5-cap, 0.5+cap]
+                                            # e.g. 0.45 → output stays in [0.05, 0.95]
 
         # ── Feature columns ──────────────────────────────────────────────────
         "feature_cols": [
