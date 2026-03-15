@@ -156,6 +156,12 @@ def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.Da
     if len(sub_target) == 0:
         print("  Sample submission has no rows for target season. Generating from seeds.")
         sub_target = _generate_all_matchups(target, m_seeds, w_seeds)
+        if len(sub_target) == 0:
+            raise ValueError(
+                f"No matchup pairs found for season {target}. "
+                f"MNCAATourneySeeds.csv has no seeds for {target} and no sample submission row matched. "
+                f"Use SampleSubmissionStage2.csv which contains the actual {target} bracket pairs."
+            )
 
     m_feat_t = build_team_features(
         m_regular, target, cfg["recent_games_window"], cfg["alpha_ci"],
