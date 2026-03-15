@@ -149,7 +149,7 @@ def build_team_features(
             for m in margins[1:]:
                 ewma_val = ewma_alpha * m + (1.0 - ewma_alpha) * ewma_val
         ewma_rows.append({"TeamID": team_id, "ewma_margin": ewma_val})
-    ewma_df = pd.DataFrame(ewma_rows)
+    ewma_df = pd.DataFrame(ewma_rows) if ewma_rows else pd.DataFrame(columns=["TeamID", "ewma_margin"])
     season_stats = season_stats.merge(ewma_df, on="TeamID", how="left")
     season_stats["ewma_margin"] = season_stats["ewma_margin"].fillna(0.0)
 
@@ -165,7 +165,7 @@ def build_team_features(
             late  = float(g.tail(n_traj)["Margin"].mean())
             traj  = late - early
         traj_rows.append({"TeamID": team_id, "season_trajectory": traj})
-    traj_df = pd.DataFrame(traj_rows)
+    traj_df = pd.DataFrame(traj_rows) if traj_rows else pd.DataFrame(columns=["TeamID", "season_trajectory"])
     season_stats = season_stats.merge(traj_df, on="TeamID", how="left")
     season_stats["season_trajectory"] = season_stats["season_trajectory"].fillna(0.0)
 
@@ -187,7 +187,7 @@ def build_team_features(
         close = grp[grp["Margin"].abs() < 5]
         wpct  = float(close["Win"].mean()) if len(close) > 0 else 0.5
         close_rows.append({"TeamID": team_id, "close_game_win_pct": wpct})
-    close_df = pd.DataFrame(close_rows)
+    close_df = pd.DataFrame(close_rows) if close_rows else pd.DataFrame(columns=["TeamID", "close_game_win_pct"])
     season_stats = season_stats.merge(close_df, on="TeamID", how="left")
     season_stats["close_game_win_pct"] = season_stats["close_game_win_pct"].fillna(0.5)
 
@@ -214,7 +214,7 @@ def build_team_features(
             "TeamID":     team_id,
             "sos_margin": float(opp_quality) if not np.isnan(opp_quality) else 0.0,
         })
-    sos_df = pd.DataFrame(sos_rows)
+    sos_df = pd.DataFrame(sos_rows) if sos_rows else pd.DataFrame(columns=["TeamID", "sos_margin"])
     # Also compute opponent win rate
     opp_win_df = (
         season_df.merge(
