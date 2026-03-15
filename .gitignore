@@ -5,3 +5,6 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 .env
+
+# Data files (large CSVs — regenerate with scripts/generate_synthetic_data.py)
+data/
