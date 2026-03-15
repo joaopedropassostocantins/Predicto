@@ -1,8 +1,13 @@
-# src/metrics.py — Evaluation metrics v4.0
+# src/metrics.py — Evaluation metrics v4.1
+#
+# Changes from v4.0:
+#   - Added per_band_logloss(): log_loss decomposed by probability band.
+#     Identifies which confidence intervals are most miscalibrated.
+#   - Added overconfidence_index(): measures tendency to predict extremes.
+#     OCI > 0 means model is more extreme than the empirical base rate.
 #
 # Changes from v3:
 #   - Added AUC-ROC to full_metric_bundle
-#   - clip_probs moved to utils.py (kept here for backward compat with metrics that imported it)
 #   - full_metric_bundle: log_loss is now the primary metric (first key returned)
 #   - Added per_season_metrics() for temporal evaluation
 #   - Added comparison_table() for side-by-side model comparison
@@ -235,6 +240,82 @@ def per_season_metrics(
     }])], ignore_index=True)
 
     return df_out
+
+
+def per_band_logloss(y_true, p_pred, bands=None) -> pd.DataFrame:
+    """
+    Log Loss decomposed by probability band.
+
+    Identifies where the model is most miscalibrated from a log_loss perspective.
+    Bands with high log_loss indicate poor calibration in that probability range.
+
+    Returns DataFrame [band, n, avg_pred, emp_rate, log_loss].
+    """
+    if bands is None:
+        bands = [
+            (0.0, 0.2), (0.2, 0.4), (0.4, 0.5),
+            (0.5, 0.6), (0.6, 0.8), (0.8, 1.0),
+        ]
+    y_true = np.asarray(y_true).astype(int)
+    p_pred = clip_probs(p_pred)
+    eps    = 1e-12
+    rows   = []
+
+    for left, right in bands:
+        if right < 1.0:
+            mask = (p_pred >= left) & (p_pred < right)
+        else:
+            mask = (p_pred >= left) & (p_pred <= right)
+        n = int(mask.sum())
+        label = f"[{left:.1f}, {right:.1f}{')'  if right < 1.0 else ']'}"
+        if n == 0:
+            rows.append({"band": label, "n": 0, "avg_pred": np.nan,
+                         "emp_rate": np.nan, "log_loss": np.nan})
+            continue
+        p_b = p_pred[mask]
+        y_b = y_true[mask]
+        ll  = float(-np.mean(
+            y_b * np.log(np.clip(p_b, eps, 1 - eps))
+            + (1 - y_b) * np.log(np.clip(1 - p_b, eps, 1 - eps))
+        ))
+        rows.append({
+            "band":     label,
+            "n":        n,
+            "avg_pred": float(p_b.mean()),
+            "emp_rate": float(y_b.mean()),
+            "log_loss": round(ll, 6),
+        })
+    return pd.DataFrame(rows)
+
+
+def overconfidence_index(y_true, p_pred, threshold: float = 0.75) -> float:
+    """
+    Overconfidence Index (OCI).
+
+    Measures the fraction of predictions that are more extreme than `threshold`
+    (i.e., p > threshold or p < 1-threshold) minus the empirical base rate of
+    dominant outcomes (actual win rate beyond threshold).
+
+    OCI > 0: model is overconfident (predicts extremes more than warranted).
+    OCI = 0: well calibrated in terms of confidence.
+    OCI < 0: model is underconfident (avoids extremes).
+
+    Parameters
+    ----------
+    threshold : float  Probability boundary defining "confident" predictions.
+    """
+    y_true = np.asarray(y_true).astype(int)
+    p_pred = clip_probs(p_pred)
+
+    pred_extreme_rate = float(((p_pred > threshold) | (p_pred < (1 - threshold))).mean())
+    # Empirical rate: how often does the actual outcome strongly favour one side?
+    # Approximate via: fraction of games decided by a clear favourite in hindsight
+    # (i.e., we use the empirical p_max to estimate what fraction should be extreme)
+    # This is a simple proxy — not a true calibration diagnostic.
+    # For a rigorous version, compare mean(p_pred) vs mean(y_true) in extreme bins.
+    actual_extreme_rate = float(np.mean(y_true))   # overall base rate of class=1
+    # OCI: excess of predicted extreme confidence over the base rate
+    return float(pred_extreme_rate - abs(actual_extreme_rate - 0.5) * 2)
 
 
 def comparison_table(

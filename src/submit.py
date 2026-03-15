@@ -1,10 +1,14 @@
-# src/submit.py — Submission generation v4.0
+# src/submit.py — Submission generation v4.1
+#
+# Changes from v4.0:
+#   - _select_calibrator_from_oof: replaced single-fold with multi-fold LOO.
+#     Old: only seasons[-1] used as validation (fragile with small n).
+#     New: choose_best_calibrator_multifold() — mean log_loss over LOO folds.
+#   - Calibration audit exported alongside submission.
 #
 # Changes from v3:
 #   - Calibrator selection: log_loss as primary criterion (was Brier).
-#   - Submission reporting: includes log_loss and ECE alongside Brier.
 #   - validate_submission() added: checks format, range, NaN before writing.
-#   - Consistent with v4 pipeline (new feature set, new blend weights).
 
 from __future__ import annotations
 
@@ -22,7 +26,12 @@ from src.data import (
 )
 from src.features import build_team_features, attach_team_features, make_matchup_features
 from src.models import compute_all_probabilities
-from src.calibration import apply_calibrator, choose_best_calibrator
+from src.calibration import (
+    apply_calibrator,
+    choose_best_calibrator,
+    choose_best_calibrator_multifold,
+    calibration_audit_report,
+)
 from src.metrics import full_metric_bundle
 from src.ratings import precompute_starting_elo
 
@@ -147,6 +156,12 @@ def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.Da
     if len(sub_target) == 0:
         print("  Sample submission has no rows for target season. Generating from seeds.")
         sub_target = _generate_all_matchups(target, m_seeds, w_seeds)
+        if len(sub_target) == 0:
+            raise ValueError(
+                f"No matchup pairs found for season {target}. "
+                f"MNCAATourneySeeds.csv has no seeds for {target} and no sample submission row matched. "
+                f"Use SampleSubmissionStage2.csv which contains the actual {target} bracket pairs."
+            )
 
     m_feat_t = build_team_features(
         m_regular, target, cfg["recent_games_window"], cfg["alpha_ci"],
@@ -168,6 +183,31 @@ def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.Da
     # Validate
     validate_submission(pred_df)
 
+    # Calibration audit on OOF (before vs after on training seasons)
+    all_oof = pd.concat([oof_cache[s] for s in available_seasons], ignore_index=True)
+    if "PredRaw" not in all_oof.columns:
+        all_oof["PredRaw"] = all_oof["Pred"].copy()
+    all_oof["PredCal"] = apply_calibrator(best_cal.fitted, all_oof["Pred"].values)
+
+    try:
+        audit = calibration_audit_report(
+            all_oof["ActualLowWin"].values,
+            all_oof["PredRaw"].values,
+            all_oof["PredCal"].values,
+            bins=10,
+        )
+        print(
+            f"\n=== Calibration Audit (OOF Training Seasons) ==="
+            f"\n  Raw  LogLoss={audit['raw_log_loss']:.4f}  "
+            f"Brier={audit['raw_brier']:.4f}  ECE={audit['raw_ece']:.4f}"
+            f"\n  Cal  LogLoss={audit['cal_log_loss']:.4f}  "
+            f"Brier={audit['cal_brier']:.4f}  ECE={audit['cal_ece']:.4f}"
+            f"\n  Δ    LogLoss={audit['delta_log_loss']:+.4f}  "
+            f"Brier={audit['delta_brier']:+.4f}  ECE={audit['delta_ece']:+.4f}"
+        )
+    except Exception as e:
+        print(f"  WARNING: Calibration audit failed: {e}")
+
     # Write
     submission = pred_df[["ID", "Pred"]].copy()
     submission.to_csv(output_path, index=False)
@@ -184,11 +224,13 @@ def generate_submission(cfg: dict, output_path: str = "submission.csv") -> pd.Da
 
 def _select_calibrator_from_oof(oof_cache: dict, seasons: list, cfg: dict):
     """
-    Select best calibrator using rolling OOF predictions.
+    Select best calibrator using multi-fold LOO from all OOF predictions.
 
-    Training set: OOF predictions from seasons[:-1].
-    Validation set: OOF predictions from seasons[-1].
-    Primary criterion: log_loss (v4 change from Brier).
+    v4.1: Replaced single-fold validation with leave-one-out across all seasons.
+    This is more robust when n_seasons is small (5-10 typical for NCAAB).
+
+    Old v4.0: used only seasons[-1] as single validation fold (fragile).
+    New v4.1: choose_best_calibrator_multifold() averages log_loss over LOO folds.
     """
     from src.calibration import fit_calibrator, CalibrationResult
 
@@ -199,17 +241,14 @@ def _select_calibrator_from_oof(oof_cache: dict, seasons: list, cfg: dict):
             metrics={"brier": 0.25, "log_loss": 0.693, "accuracy": 0.5, "ece": 0.1, "auc": 0.5},
         )
 
-    val_season    = seasons[-1]
-    train_seasons = seasons[:-1]
+    # Build OOF tuples (pred, label) for each season in chronological order
+    oof_tuples = [
+        (oof_cache[s]["Pred"].values, oof_cache[s]["ActualLowWin"].values)
+        for s in seasons
+    ]
 
-    cal_train_df = pd.concat([oof_cache[s] for s in train_seasons], ignore_index=True)
-    cal_val_df   = oof_cache[val_season]
-
-    return choose_best_calibrator(
-        p_train=cal_train_df["Pred"].values,
-        y_train=cal_train_df["ActualLowWin"].values,
-        p_valid=cal_val_df["Pred"].values,
-        y_valid=cal_val_df["ActualLowWin"].values,
+    return choose_best_calibrator_multifold(
+        oof_preds=oof_tuples,
         scorer_fn=lambda y, p: full_metric_bundle(y, p),
         methods=cfg.get("calibration_methods", ["identity", "temperature", "platt", "isotonic"]),
         cfg=cfg,

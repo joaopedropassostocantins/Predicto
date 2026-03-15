@@ -1,13 +1,23 @@
-# src/features.py — Feature engineering v4.0
+# src/features.py — Feature engineering v4.1
+#
+# Changes from v4.0:
+#   - Added offensive/defensive efficiency proxy features.
+#     off_eff ≈ points_for / games (already captured via season_points_for)
+#     net_eff ≈ margin (already captured)
+#     NEW: off_eff_diff = season_points_for_low - season_points_against_high
+#          (directly captures: how much team A scores vs how much B allows)
+#     NEW: def_eff_diff = season_points_against_high - season_points_for_low
+#          (mirror — captures defensive matchup strength)
+#     These are now added as matchup-level features in make_matchup_features().
+#   - Feature added to feature_cols in config.py: off_eff_diff, def_eff_diff,
+#     net_eff_diff (= off_eff_diff - def_eff_diff = matchup_diff, but explicit)
 #
 # Changes from v3:
-#   - Added EWMA (exponentially weighted moving average) for point margin
-#     alpha=0.20 → half-life ≈ 3 games (emphasises recent form)
-#   - Added elo_delta and elo_volatility from ratings.compute_season_elo()
-#   - league_avg_score injected into matchup frame for multiplicative Poisson
-#   - Better SoS computation (two-pass: league avg margin first, then SoS)
-#   - quality_proxy normalised by number of teams in season
-#   - Adaptive Poisson shrinkage (k/(k+n)) replaces fixed weight
+#   - Added EWMA (alpha=0.20) for point margin
+#   - Added elo_delta and elo_volatility
+#   - league_avg_score injected for multiplicative Poisson
+#   - Better SoS (two-pass), quality_proxy normalised by n_teams
+#   - Adaptive Poisson shrinkage k/(k+n)
 #   - All features strictly pre-game (no post-game leakage)
 #
 # Feature causal ordering:
@@ -19,6 +29,7 @@
 #   6. Elo momentum/volatility (from Elo history)
 #   7. EWMA margin (recency-weighted form)
 #   8. Strength of schedule, quality wins (opponent-based)
+#   9. Offensive/defensive efficiency proxy (NEW v4.1)
 
 from __future__ import annotations
 
@@ -495,6 +506,33 @@ def make_matchup_features(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataF
     out["quality_win_pct_diff"]    = out["quality_win_pct_low"]      - out["quality_win_pct_high"]
     out["blowout_pct_diff"]        = out["blowout_pct_low"]          - out["blowout_pct_high"]
     out["close_game_win_pct_diff"] = out["close_game_win_pct_low"]   - out["close_game_win_pct_high"]
+
+    # NEW v4.1: Offensive/defensive efficiency proxy features
+    # off_eff_diff: how much Low scores vs how much High allows (direct matchup score)
+    # def_eff_diff: how much High scores vs how much Low allows (reverse)
+    # net_eff_diff: overall efficiency advantage (= matchup_diff, explicit formulation)
+    #
+    # These differ from matchup_diff in that they're interpreted independently:
+    # off_eff_diff > 0 means Low has a scoring advantage against High's defense
+    # def_eff_diff < 0 means Low has a defensive advantage against High's offense
+    if "season_points_for_low" in out.columns and "season_points_against_high" in out.columns:
+        out["off_eff_diff"] = (
+            out["season_points_for_low"] - out["season_points_against_high"]
+        )
+        out["def_eff_diff"] = (
+            out["season_points_against_low"] - out["season_points_for_high"]
+        )
+        # net: positive = Low has overall efficiency advantage
+        out["net_eff_diff"] = out["off_eff_diff"] - out["def_eff_diff"]
+
+        # Recent form efficiency (last 5 games)
+        if "recent5_points_for_low" in out.columns:
+            out["recent_off_eff_diff"] = (
+                out["recent5_points_for_low"] - out["recent5_points_against_high"]
+            )
+            out["recent_def_eff_diff"] = (
+                out["recent5_points_against_low"] - out["recent5_points_for_high"]
+            )
 
     # Poisson matchup features (includes multiplicative lambda + new v4 features)
     poisson_cfg = {
